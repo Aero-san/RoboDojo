@@ -27,6 +27,7 @@ def resolve_path(config_path: str) -> str:
     # Define placeholder mapping (placeholder -> actual directory path)
     path_mapping = {
         "$RoboDojo_ASSETS": ASSETS_PATH,
+        "$Robodojo_ASSETS": ASSETS_PATH,
         "$RoboDojo_CONF": ENV_CONFIG_PATH,
         "$RoboDojo_HOME": ROOT_DIR,
     }
