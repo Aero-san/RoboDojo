@@ -36,9 +36,9 @@ The [RoboDojo documentation](https://robodojo-benchmark.com/doc/) is the canonic
 | :-- | :-- |
 | [Usage Overview](https://robodojo-benchmark.com/doc/usage/) | End-to-end walkthrough of the evaluation workflow. |
 | [Installation & Downloading (Assets and Data)](https://robodojo-benchmark.com/doc/usage/install-and-download/) | Environment setup and downloading robot/object/layout assets/training data. |
-| [Quick Evaluation](https://robodojo-benchmark.com/doc/usage/evaluation/) | Quickly dispatch XPolicyLab to run a policy for testing. |
-| [XPolicyLab](https://robodojo-benchmark.com/doc/usage/XPolicyLab/) | Integrates a large collection of policies and defines how to integrate new ones. |
-| [Simulation Tasks Details](https://robodojo-benchmark.com/doc/tasks/) | The 42 Isaac Sim tasks across five capability dimensions. |
+| [Quick Evaluation](https://robodojo-benchmark.com/doc/usage/quick-evaluation/) | Quickly dispatch XPolicyLab to run a policy for testing. |
+| [XPolicyLab](https://robodojo-benchmark.com/doc/usage/xpolicylab/) | Integrates a large collection of policies and defines how to integrate new ones. |
+| [Simulation Tasks Details](https://robodojo-benchmark.com/doc/sim-tasks/) | The 42 Isaac Sim tasks across five capability dimensions. |
 | [Real Robot Tasks Details](https://robodojo-benchmark.com/doc/real-tasks/) | The 18 real-world tasks on Piper X, Piper, and ARX X5. |
 | [Configurations](https://robodojo-benchmark.com/doc/usage/configurations/) | Simulator, scene, robot, and camera configuration options. |
 | [Common Issues](https://robodojo-benchmark.com/doc/common-issue/) | Troubleshooting for installation, assets, GPU memory, and evaluation. |
