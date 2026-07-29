@@ -191,6 +191,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 trial_id=trial_id,
                 action_case_id=action_case_id,
                 repeat_index=self.deploy_cfg.get("repeat_index"),
+                ws_ping_interval_s=self.deploy_cfg.get("ws_ping_interval_s", 20.0),
+                ws_ping_timeout_s=self.deploy_cfg.get("ws_ping_timeout_s", 20.0),
             )
             self.robot_action_dim_info = get_robot_action_dim_info(env_cfg=self.eval_cfg)
 
