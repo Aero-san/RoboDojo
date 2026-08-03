@@ -80,7 +80,7 @@ View live rankings on the [RoboDojo Leaderboard](https://robodojo-benchmark.com/
 
 ```bibtex
 @article{chen2026robodojo,
-  title={RoboDojo: A Unified Sim-and-Real Benchmark for Comprehensive Evaluation of Generalist Robot Manipulation Policies},
+  title={{RoboDojo}: A Unified Sim-and-Real Benchmark for Comprehensive Evaluation of Generalist Robot Manipulation Policies},
   author={Chen, Tianxing and Chen, Yue and Li, Zixuan and Tang, Junyuan and Su, Kailun and Wan, Weijie and Chen, Baijun and Lu, Haoran and Yan, Haowen and Su, Honghao and others},
   journal={arXiv preprint arXiv:2607.04434},
   year={2026}
