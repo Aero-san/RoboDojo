@@ -42,8 +42,17 @@ class SeedManager:
         for idx, file_path in enumerate(matching_files):
             self.seed_info[idx] = {"scene_layout": file_path}
 
-        all_layout_ids = list(range(len(matching_files)))
-        excluded = set(int(s) for s in (completed_layout_ids or [])) | set(int(s) for s in (abandoned_layout_ids or []))
+        shard_index = int(self.config.get("layout_shard_index", 0))
+        shard_count = int(self.config.get("layout_shard_count", 1))
+        if shard_count < 1 or not 0 <= shard_index < shard_count:
+            raise ValueError(
+                "Layout shard must satisfy shard_count >= 1 and "
+                f"0 <= shard_index < shard_count, got {shard_index}/{shard_count}."
+            )
+        all_layout_ids = list(range(len(matching_files)))[shard_index::shard_count]
+        excluded = set(int(s) for s in (completed_layout_ids or [])) | set(
+            int(s) for s in (abandoned_layout_ids or [])
+        )
         if excluded:
             self.seed_list: List[int] = [s for s in all_layout_ids if s not in excluded]
             print(
@@ -52,6 +61,11 @@ class SeedManager:
             )
         else:
             self.seed_list = all_layout_ids
+        if shard_count > 1:
+            print(
+                f"[SeedManager] layout shard={shard_index}/{shard_count} "
+                f"layouts={len(self.seed_list)}/{len(matching_files)}"
+            )
         self.st_idx = 0
         self.ed_idx = len(self.seed_list)
 

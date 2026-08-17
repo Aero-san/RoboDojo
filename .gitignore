@@ -22,3 +22,7 @@ ignore/
 .cursor/
 .claude/
 Untitled
+
+.venv/
+outputs/
+wandb/

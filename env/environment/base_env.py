@@ -4,6 +4,7 @@ from typing import Any
 import gymnasium as gym
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sim import SimulationContext
 from isaaclab_tasks.utils import parse_env_cfg  # this need dynamic import
 from isaacsim.core.utils.stage import get_current_stage
 from omegaconf import DictConfig, OmegaConf
@@ -135,6 +136,31 @@ class BaseEnv(gym.Env):
 
         self.setup_sim_cfg(config)
 
+        # IsaacLab's SimulationContext is a process-wide singleton.  In this
+        # project the outer BaseEnv owns the only simulation, so a context
+        # that exists while ``self.sim`` is still None is stale (typically
+        # left by an interrupted/partially failed Isaac Sim construction).
+        # Clear it before gym.make() so the actual startup failure is not
+        # misreported as "Simulation context already exists".
+        stale_sim = SimulationContext.instance()
+        if self.sim is None and stale_sim is not None:
+            print("[BaseEnv] clearing stale IsaacLab SimulationContext before launch", flush=True)
+            try:
+                stale_sim.clear_all_callbacks()
+            except Exception:
+                pass
+            try:
+                stale_sim.stop()
+            except Exception:
+                pass
+            try:
+                stale_sim.clear_instance()
+            except Exception as exc:
+                raise RuntimeError(
+                    "Found a stale IsaacLab SimulationContext, but failed to clear it. "
+                    "Restart Isaac Sim/the process and check GPU health."
+                ) from exc
+
         import traceback
 
         try:
@@ -210,8 +236,16 @@ class BaseEnv(gym.Env):
             print("[restart] timeline stop/set failed:", e)
 
         if self.sim is not None:
-            self.sim.close()
-            self.sim = None
+            try:
+                self.sim.close()
+            finally:
+                # IsaacLab keeps SimulationContext as a process-wide
+                # singleton.  Explicitly clear it here as a safety net for
+                # USD-backed stages (where older IsaacLab close() versions
+                # did not clear the singleton).
+                if SimulationContext.instance() is not None:
+                    SimulationContext.instance().clear_instance()
+                self.sim = None
 
         try:
             import omni.usd

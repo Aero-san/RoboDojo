@@ -55,6 +55,107 @@ XPolicyLab/            policy server and policy integrations
 Assets/                downloaded robot, object, material, and layout assets
 ```
 
+## 🧠 Pi0.5 WCM / RL Token post-training
+
+The official WCM implementation is configured as
+`external_dependencies/WCM`. Initialize it before training:
+
+```bash
+git submodule update --init --recursive external_dependencies/WCM
+./scripts/posttrain/install_wcm.sh
+bash scripts/posttrain/run_wcm.sh
+```
+
+The default config reads `data/RoboDojo_lerobot_v21_video` and writes
+`outputs/wcm/robodojo_pi05/deploy.pt`. Since the expert export has no reward
+column, it assumes expert episodes are successful; mixed rollouts must provide
+`WCM_SUCCESS_LABELS=/path/to/episode_labels.json`.
+
+To evaluate an existing WCM artifact, use
+`MODE=eval WCM_CHECKPOINT=/path/to/deploy.pt bash scripts/posttrain/run_wcm.sh`;
+for a single-task checkpoint, also pass `TASK_NAME=stack_bowls`.
+
+Every post-training path supports single-task training. Set `TASK_NAME` on a
+shell launcher or pass `--task` to the Python launcher; use a complete task
+instruction or a unique benchmark slug such as `stack_bowls`:
+
+```bash
+TASK_NAME=stack_bowls bash scripts/posttrain/run_wcm.sh
+
+bash scripts/posttrain/run_pi05_rltoken.sh \
+  --task stack_bowls \
+  --wcm-checkpoint outputs/wcm/robodojo_pi05/stack_bowls/deploy.pt \
+  --output outputs/posttrain/stack_bowls_rltoken.pt \
+  --objective rltoken
+```
+
+Train a WCM-guided Pi0.5 reference-conditioned actor with:
+
+```bash
+scripts/posttrain/run_pi05_rltoken.sh \
+  --wcm-checkpoint outputs/wcm/robodojo_pi05/deploy.pt \
+  --output outputs/posttrain/pi05_wcm_actor.pt --objective wcm_actor
+```
+
+To use the result through the official XPolicyLab loader and RoboDojo
+evaluator, export `POSTTRAIN_MODE=wcm_actor` and
+`POSTTRAIN_CHECKPOINT=...` when invoking `scripts/robodojo.sh`. The
+same training script supports `--objective rltoken`; direct WCM-selected
+Pi0.5 fine-tuning is available through
+`scripts/posttrain/finetune_pi05_with_wcm.sh`.
+
+The actor also has a complete iterative off-policy path:
+
+```bash
+TASK_NAME=stack_bowls \
+BASE_POLICY_CHECKPOINT=$PWD/XPolicyLab/policy/Pi_05/checkpoints/my_sft/59999 \
+bash scripts/posttrain/run_pi05_rltoken_recap.sh
+```
+
+It runs successful-SFT buffer initialization, WCM update, encoder/actor BC
+initialization, WCM-guided actor update, and labelled simulator collection.
+Subsequent rounds resume the full encoder/actor/optimizer state. Rollouts keep
+the frozen Pi0.5 reference action separately from the executed actor action.
+Fresh actors default to direct action prediction so the initial successful-data
+BC phase has a nonzero learning signal; `RLTOKEN_ACTOR_MODE=residual` is only
+valid when successful executed actions differ from their references.
+Configuration is documented in
+[`pi05_rltoken_recap.env.example`](configs/posttrain/pi05_rltoken_recap.env.example).
+During collection, `RLTOKEN_ROLLOUT_GPUS` is paired as independent
+policy/Isaac workers, so eight listed GPUs create four workers and four GPUs
+create two. Each Isaac worker also runs multiple vectorized environments, and
+layout shards prevent duplicate episodes across workers.
+
+For iterative simulator experience, use the off-policy WCM + RECAP pipeline:
+
+```bash
+TASK_NAME=stack_bowls \
+INITIAL_POLICY_CHECKPOINT=$PWD/XPolicyLab/policy/Pi_05/checkpoints/my_sft/59999 \
+bash scripts/posttrain/run_pi05_recap.sh
+```
+
+The first iteration uses successful SFT demonstrations only. It updates WCM,
+computes globally normalized RECAP advantages, updates Pi0.5 with the explicit
+unconditional-plus-conditioned flow-matching objective, and then collects
+success/failure-labelled RoboDojo rollouts for the next iteration. The policy
+is carried forward between rounds. WCM uses one DDP process per
+`WCM_TRAIN_GPUS` entry, while OpenPI uses every `TRAIN_GPUS` entry in its
+data-parallel/FSDP mesh. A single stateful rollout cannot be sharded, but its
+policy server and Isaac Sim can use separate `POLICY_GPU` and `ENV_GPU` cards.
+Detailed configuration and evaluation
+commands are in
+[`scripts/README.md`](scripts/README.md#off-policy-wcm--recap).
+
+Direct fine-tuning uses `PI05_FINETUNE_MODE` to select the trainable Pi0.5
+parameters: `full`, `action_expert`, `action_expert_lora`, `paligemma_lora`,
+or `all_lora`. The default is `action_expert`, which includes the second
+Gemma stream and Pi0.5 action/timestep projections while freezing vision and
+PaliGemma. Set `OPENPI_LEARNING_RATE`, `OPENPI_WARMUP_STEPS`,
+`OPENPI_WEIGHT_DECAY`, `OPENPI_BATCH_SIZE`, `OPENPI_NUM_TRAIN_STEPS`, and
+`OPENPI_FSDP_DEVICES` to control the run. The resulting OpenPI checkpoint
+stays under `XPolicyLab/policy/Pi_05/checkpoints/` and is directly consumable
+by the existing XPolicyLab Pi0.5 loader and `scripts/robodojo.sh`.
+
 ## 🔌 Policy Integration
 
 Policies live in [XPolicyLab](https://github.com/XPolicyLab/XPolicyLab/blob/main/README.md), which owns policy structure, dependencies, checkpoint layout, and server behavior. RoboDojo only assumes a policy directory provides:

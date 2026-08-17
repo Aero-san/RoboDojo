@@ -10,3 +10,7 @@
 	path = XPolicyLab
 	url = https://github.com/XPolicyLab/XPolicyLab.git
 	branch = main
+[submodule "external_dependencies/WCM"]
+	path = external_dependencies/WCM
+	url = https://github.com/sylvestf/WCM.git
+	branch = main

@@ -19,6 +19,7 @@ env_gpu_ids=""
 policy_env=""
 eval_env="RoboDojo"
 eval_num="1"
+max_steps="${ROBODOJO_MAX_STEPS:-}"
 policy_name=""
 policy_host=""
 policy_port=""
@@ -63,6 +64,7 @@ Options:
   --markdown PATH     Markdown summary path (default: smoke_results/<run_id>.md)
   --run-id ID         Stable run id used in result paths and summaries.
   --eval-num NUM      Episode count for each task (default: 1). Use `native` to use per-task counts from _task.yml.
+  --max-steps NUM     Override each task's maximum deployed actions per episode.
   --dataset NAME      eval.sh dataset arg (default: RoboDojo)
   --ckpt NAME         Policy checkpoint name (required)
   --env-cfg NAME      env_cfg stem (default: arx_x5)
@@ -123,6 +125,7 @@ while [[ $# -gt 0 ]]; do
     --markdown) need_value "$@"; markdown_path="$2"; shift 2 ;;
     --run-id) need_value "$@"; run_id="$2"; shift 2 ;;
     --eval-num) need_value "$@"; eval_num="$2"; shift 2 ;;
+    --max-steps) need_value "$@"; max_steps="$2"; shift 2 ;;
     --dataset) need_value "$@"; dataset="$2"; shift 2 ;;
     --ckpt) need_value "$@"; ckpt="$2"; shift 2 ;;
     --env-cfg) need_value "$@"; env_cfg="$2"; shift 2 ;;
@@ -150,6 +153,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "${max_steps}" && ! "${max_steps}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[smoke_all_tasks] --max-steps must be a positive integer" >&2
+  exit 2
+fi
 
 dimension_args=(--resolve-dimensions)
 if [[ -n "${dimensions}" ]]; then
@@ -793,6 +801,9 @@ run_eval_for_task() {
   fi
   if [[ "${eval_num}" != "native" ]]; then
     eval_cmd+=(--eval-num "${eval_num}")
+  fi
+  if [[ -n "${max_steps}" ]]; then
+    eval_cmd+=(--max-steps "${max_steps}")
   fi
   if [[ "${dry_run}" == "true" ]]; then
     eval_cmd+=(--dry-run)

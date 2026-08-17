@@ -14,6 +14,7 @@ from env.global_configs import *
 from env.global_configs import BENCHMARK
 from env.observation_manager.obs_manager import ObsManager
 from env.seed_manager.seed_manager import SeedManager
+from src.eval_client.rollout_recorder import RolloutRecorder
 from utils.cluttered_generator import UnStableError
 from utils.pipeline_utils import get_robot_action_dim_info
 from utils.save_file import VideoStreamWriter, format_video_saved_message, save_json
@@ -61,6 +62,20 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             self.additional_info = self.eval_cfg.get("additional_info", "")
             self.eval_seed = self.eval_cfg.get("seed", 0)
             self.physx_monitor_enabled = bool(self.eval_cfg.get("physx_monitor_enabled", False))
+            self.video_enabled = bool(self.eval_cfg.get("save_video", True))
+            self.task_step_lim = int(self.step_lim)
+            configured_max_steps = self.eval_cfg.get("max_steps")
+            if configured_max_steps is not None:
+                configured_max_steps = int(configured_max_steps)
+                if configured_max_steps < 1:
+                    raise ValueError("eval_cfg.max_steps must be a positive integer.")
+                self.step_lim = configured_max_steps
+            print(
+                f"[EvalEnv] max_steps={self.step_lim} "
+                f"(task_default={self.task_step_lim}, "
+                f"override={configured_max_steps is not None})",
+                flush=True,
+            )
             if self.physx_monitor_enabled:
                 from src.eval_client.physx_warning_monitor import (
                     PhysXBrokenError,
@@ -131,6 +146,9 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 "success_rate": 0.0,
                 "eval_time": 0,
                 "score": 0.0,
+                "video_enabled": self.video_enabled,
+                "max_steps": self.step_lim,
+                "task_default_max_steps": self.task_step_lim,
                 "details": {},
             }
 
@@ -191,13 +209,27 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 trial_id=trial_id,
                 action_case_id=action_case_id,
                 repeat_index=self.deploy_cfg.get("repeat_index"),
-                ws_ping_interval_s=self.deploy_cfg.get("ws_ping_interval_s", 20.0),
-                ws_ping_timeout_s=self.deploy_cfg.get("ws_ping_timeout_s", 20.0),
+                ws_ping_interval_s=self.deploy_cfg.get("ws_ping_interval_s", 60.0),
+                ws_ping_timeout_s=self.deploy_cfg.get("ws_ping_timeout_s", 120.0),
             )
             self.robot_action_dim_info = get_robot_action_dim_info(env_cfg=self.eval_cfg)
+            rollout_root = os.environ.get("ROBODOJO_ROLLOUT_DIR", "").strip()
+            self.rollout_recorder = (
+                RolloutRecorder(
+                    rollout_root,
+                    self.run_id,
+                    self.obs_manager.collect_freq,
+                    self.robot_action_dim_info,
+                    self.task_name,
+                )
+                if rollout_root
+                else None
+            )
 
         def close(self):
             self._abort_video_writers()
+            if self.rollout_recorder is not None:
+                self.rollout_recorder.close()
             self.obs_manager.reset()
             super().close()
 
@@ -221,6 +253,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             # Discard any writers left open by a previous (e.g. crashed or
             # unstable) batch before starting a fresh one.
             self._abort_video_writers()
+            if self.rollout_recorder is not None:
+                self.rollout_recorder.abort()
             self.episode_nums = len(real_indices)
             self.unstable_envs = set()
 
@@ -279,6 +313,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             for env_idx in env_idx_list:
                 if not self.end_flag[env_idx] or last_frame:
                     self._stream_vision(env_idx, data[env_idx])
+                if self.rollout_recorder is not None and not last_frame and not self.end_flag[env_idx]:
+                    self.rollout_recorder.observe(env_idx, data[env_idx])
                 env_data = deepcopy(data[env_idx])
                 env_data["env_idx"] = env_idx
                 data_list.append(env_data)
@@ -367,6 +403,16 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 action_type = self.get_action_type(action)
                 if self.take_action_cnt[env_idx] == self.step_lim or self.end_flag[env_idx]:
                     continue
+
+                if self.rollout_recorder is not None:
+                    pop_reference = getattr(self.model_client, "pop_reference_action", None)
+                    reference_action = pop_reference(env_idx) if callable(pop_reference) else None
+                    self.rollout_recorder.record_action(
+                        env_idx,
+                        action,
+                        action_type,
+                        reference_action=reference_action,
+                    )
 
                 self.take_action_cnt[env_idx] += 1
                 print(
@@ -622,7 +668,7 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                     continue
                 value = action_dict[key]
 
-                if not isinstance(value, (np.ndarray, list, tuple)):
+                if not isinstance(value, np.ndarray | list | tuple):
                     raise TypeError(f"action_dict['{key}'] must be array-like, got {type(value)}")
 
                 arr = np.asarray(value)
@@ -791,6 +837,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             if unstable_in_batch:
                 self.unstable_nums += len(unstable_in_batch)
                 self.episode_nums -= len(unstable_in_batch)
+                if self.rollout_recorder is not None:
+                    self.rollout_recorder.abort(unstable_in_batch)
             eval_envs = [e for e in exist_envs if e not in self.unstable_envs]
             for idx, env_idx in enumerate(eval_envs):
                 index = idx + self.success_nums + self.fail_nums
@@ -814,9 +862,29 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                     "layout_id": int(self.env_seeds[env_idx]),
                     "success": bool(self.success[env_idx]),
                     "score": episode_score,
+                    "steps": int(self.take_action_cnt[env_idx]),
+                    "termination_reason": (
+                        "success"
+                        if self.success[env_idx]
+                        else "max_steps"
+                        if self.take_action_cnt[env_idx] >= self.step_lim
+                        else "environment_failure"
+                    ),
                 }
-                video_path = os.path.join(self.save_dir, f"episode_{index:07d}.mp4")
-                self.save_video(env_idx, video_path, tag)
+                if self.rollout_recorder is not None:
+                    rollout_path = self.rollout_recorder.finalize(
+                        env_idx,
+                        index,
+                        success=bool(self.success[env_idx]),
+                        score=episode_score,
+                        layout_id=int(self.env_seeds[env_idx]),
+                    )
+                    self.eval_result["details"][index]["rollout_path"] = str(rollout_path)
+                if self.video_enabled:
+                    video_path = os.path.join(self.save_dir, f"episode_{index:07d}.mp4")
+                    self.save_video(env_idx, video_path, tag)
+                else:
+                    self._abort_video_writers([env_idx])
 
             # Drop streams for envs not saved this batch (e.g. unstable ones).
             self._abort_video_writers()
@@ -830,6 +898,12 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 self.eval_result["score"] = self.total_score / eval_time * 100
             self.eval_result["eval_time"] = eval_time
             save_json(self.eval_result, os.path.join(self.save_dir, "_result.json"))
+            print(
+                f"[Eval] success_rate={self.eval_result['success_rate'] * 100:.2f}% "
+                f"({self.success_nums}/{eval_time}), score={self.eval_result['score']:.2f}, "
+                f"video_enabled={self.video_enabled}",
+                flush=True,
+            )
             # Refresh the resume manifest at the end of every batch so that a
             # downstream SIGABRT (which beats the in-process PhysXFatalError
             # handler) still recovers everything up to the previous batch.
@@ -876,6 +950,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             lazily on the first frame (when the resolution is known) and write
             to temporary files until the episode outcome decides the name.
             """
+            if not self.video_enabled:
+                return
             vision = frame.get("vision") if isinstance(frame, dict) else None
             if not vision:
                 return

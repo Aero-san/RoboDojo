@@ -9,7 +9,7 @@ from isaacsim.core.utils.string import find_unique_string_name
 import numpy as np
 from omegaconf import DictConfig
 import omni.usd
-from pxr import Gf, Sdf, Usd, UsdGeom
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 import torch
 
 from env.scene_manager.layout_manager import LayoutManager
@@ -41,6 +41,12 @@ class RigidObject(SingleRigidPrim, SingleGeometryPrim):
                 else f"Failed to find an existing prim at path {prim_path}"
             )
             raise RuntimeError(error_message)
+
+        # RigidObject owns the physics body for the whole imported asset.
+        # Some rigid USDZ assets (notably wine_bottle) also contain a
+        # RigidBodyAPI on a descendant mesh. Once referenced below this
+        # wrapper prim, that creates a rigid-body-in-rigid-body hierarchy.
+        self._remove_nested_rigid_bodies(prim)
 
         """Initialize a rigid body object with geometry and physics properties."""
         self.stage = prim.GetStage()
@@ -98,6 +104,23 @@ class RigidObject(SingleRigidPrim, SingleGeometryPrim):
         self._default_angular_velocity = [0.0, 0.0, 0.0]
 
         self._setup_physics()
+
+    @staticmethod
+    def _remove_nested_rigid_bodies(root_prim):
+        stage = root_prim.GetStage()
+        for child in Usd.PrimRange(root_prim):
+            if child == root_prim or not child.HasAPI(UsdPhysics.RigidBodyAPI):
+                continue
+            rigid_body = UsdPhysics.RigidBodyAPI.Get(stage, child.GetPath())
+            enabled_attr = rigid_body.GetRigidBodyEnabledAttr()
+            if enabled_attr and enabled_attr.IsValid():
+                enabled_attr.Set(False)
+            try:
+                child.RemoveAPI(UsdPhysics.RigidBodyAPI)
+            except Exception:
+                # Some referenced layers don't allow API removal; disabled is
+                # still sufficient to prevent PhysX from registering a child body.
+                pass
 
     def _get_object_transform(self, device=None):
         """

@@ -59,6 +59,12 @@ parser.add_argument(
 
 
 parser.add_argument("--seed", type=int, required=True, help="policy seed for eval")
+parser.add_argument(
+    "--max_steps",
+    type=int,
+    default=None,
+    help="Override the task's maximum number of deployed actions per episode.",
+)
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -262,7 +268,25 @@ def main():
     eval_cfg["policy_name"] = args_cli.policy_name
     eval_cfg["additional_info"] = args_cli.additional_info
     eval_cfg["seed"] = args_cli.seed
+    if args_cli.max_steps is not None:
+        if args_cli.max_steps < 1:
+            raise ValueError("--max_steps must be a positive integer.")
+        eval_cfg["max_steps"] = args_cli.max_steps
+    raw_layout_shard = os.environ.get("ROBODOJO_LAYOUT_SHARD", "").strip()
+    if raw_layout_shard:
+        shard_index_raw, shard_count_raw = raw_layout_shard.split("/", 1)
+        shard_index = int(shard_index_raw)
+        shard_count = int(shard_count_raw)
+        if shard_count < 1 or not 0 <= shard_index < shard_count:
+            raise ValueError(
+                "ROBODOJO_LAYOUT_SHARD must be zero-based I/N with 0 <= I < N."
+            )
+    else:
+        shard_index, shard_count = 0, 1
+    eval_cfg["layout_shard_index"] = shard_index
+    eval_cfg["layout_shard_count"] = shard_count
     eval_cfg["physx_monitor_enabled"] = enable_monitor
+    eval_cfg["save_video"] = os.environ.get("ROBODOJO_SAVE_VIDEO", "1").lower() not in {"0", "false", "no", "off"}
 
     deploy_cfg = {}
     deploy_cfg["policy_name"] = args_cli.policy_name
@@ -325,7 +349,7 @@ def main():
     if os.environ.get("EVAL_NUM"):
         _env_eval_num = os.environ.get("EVAL_NUM")
         if str(_env_eval_num).lower() != "native":
-            eval_num = min(int(_env_eval_num), int(eval_num))
+            eval_num = int(_env_eval_num)
     eval_cfg["eval_num"] = eval_num
 
     OmegaConf.update(

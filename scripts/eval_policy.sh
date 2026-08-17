@@ -26,11 +26,13 @@ seed=""
 host="localhost"
 protocol=""
 policy_server_url=""
+max_steps="${ROBODOJO_MAX_STEPS:-}"
 extra_args=()
+save_video="${ROBODOJO_SAVE_VIDEO:-1}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --root_dir|--task_name|--env_cfg_type|--device_id|--policy_name|--port|--eval_batch|--additional_info|--seed|--host|--protocol|--policy_server_url)
+    --root_dir|--task_name|--env_cfg_type|--device_id|--policy_name|--port|--eval_batch|--additional_info|--seed|--host|--protocol|--policy_server_url|--max_steps)
       if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "[ERROR] Missing value for argument: $1"
         exit 1
@@ -49,8 +51,17 @@ while [[ $# -gt 0 ]]; do
         --host) host="$2" ;;
         --protocol) protocol="$2" ;;
         --policy_server_url) policy_server_url="$2" ;;
+        --max_steps) max_steps="$2" ;;
       esac
       shift 2
+      ;;
+    --save-video)
+      save_video=1
+      shift
+      ;;
+    --no-video)
+      save_video=0
+      shift
       ;;
     *)
       extra_args+=("$1")
@@ -58,6 +69,8 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+export ROBODOJO_SAVE_VIDEO="${save_video}"
 
 for var_name in root_dir task_name env_cfg_type device_id policy_name port; do
   if [[ -z "${!var_name}" ]]; then
@@ -113,12 +126,30 @@ fi
 
 # Read render_interval / env.num_envs from yaml (fallback if missing)
 render_interval="$(python3 -c "import sys,yaml;print(yaml.safe_load(open(sys.argv[1])).get('render_interval',1))" "$sim_cfg_file")"
-num_envs="$(python3 -c "import sys,yaml;print(yaml.safe_load(open(sys.argv[1])).get('scene',{}).get('num_envs',1))" "$sim_cfg_file")"
+configured_num_envs="$(python3 -c "import sys,yaml;print(yaml.safe_load(open(sys.argv[1])).get('scene',{}).get('num_envs',1))" "$sim_cfg_file")"
+num_envs="${ROBODOJO_NUM_ENVS:-${configured_num_envs}}"
+if [[ ! "${num_envs}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[ERROR] ROBODOJO_NUM_ENVS must be a positive integer, got: ${num_envs}" >&2
+  exit 2
+fi
 
 echo "[INFO] render_interval = ${render_interval}"
 echo "[INFO] num_envs        = ${num_envs}"
+if [[ -n "${max_steps}" ]]; then
+  if [[ ! "${max_steps}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[ERROR] max_steps must be a positive integer, got: ${max_steps}" >&2
+    exit 2
+  fi
+  echo "[INFO] max_steps       = ${max_steps} (override)"
+else
+  echo "[INFO] max_steps       = task default"
+fi
 
 extra_args=()
+max_steps_args=()
+if [[ -n "${max_steps}" ]]; then
+  max_steps_args=(--max_steps "${max_steps}")
+fi
 
 KIT_ENABLE_EXTS=(
   "isaacsim.replicator.behavior"
@@ -135,7 +166,7 @@ done
 # defuse same-second collisions when the same task/config is launched
 # in parallel.
 if [[ -z "${ROBODOJO_RUN_ID:-}" ]]; then
-  export ROBODOJO_RUN_ID="$(date +%Y-%m-%d_%H-%M-%S)"
+  export ROBODOJO_RUN_ID="$(date +%Y-%m-%d_%H-%M-%S)-$$"
 fi
 echo "[eval_policy] ROBODOJO_RUN_ID=${ROBODOJO_RUN_ID}"
 
@@ -157,7 +188,9 @@ while : ; do
     --additional_info "$additional_info" \
     --seed "$seed" \
     --host "$host" \
+    "${max_steps_args[@]}" \
     --headless \
+    --rendering_mode "${ROBODOJO_RENDERING_MODE:-performance}" \
     "${extra_args[@]}" \
     "$@"
   rc=$?

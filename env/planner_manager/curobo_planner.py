@@ -1,4 +1,5 @@
 from copy import deepcopy
+from pathlib import Path
 
 from curobo.batch_motion_planner import BatchMotionPlanner, MotionPlannerCfg
 from curobo.inverse_kinematics import InverseKinematics, InverseKinematicsCfg
@@ -43,6 +44,7 @@ class CuroboPlanner:
         # translate from baselink to arm's base
         with open(self.yml_path) as f:
             yml_data = yaml.safe_load(f)
+        self._resolve_robot_asset_paths(yml_data)
         self.frame_bias = yml_data["planner"]["frame_bias"]
 
         self.robot_cfg, self.scene_model = self._build_robot_and_scene_cfg(yml_data, table_height)
@@ -103,6 +105,39 @@ class CuroboPlanner:
 
         if self.use_cuda_graph:
             self._prewarm_alternate_modes()
+
+    def _resolve_robot_asset_paths(self, yml_data):
+        """Resolve robot assets relative to the checked-out robot config.
+
+        Some generated Curobo files contain absolute paths from the machine on
+        which they were generated.  Those paths must not be allowed to escape
+        the current RoboDojo checkout.
+        """
+        kinematics = yml_data.get("robot_cfg", {}).get("kinematics", {})
+        config_dir = Path(self.yml_path).resolve().parent
+
+        raw_asset_root = kinematics.get("asset_root_path")
+        if raw_asset_root:
+            asset_root = Path(raw_asset_root)
+            if not asset_root.is_absolute():
+                asset_root = config_dir / asset_root
+            if not asset_root.is_dir():
+                asset_root = config_dir
+            kinematics["asset_root_path"] = str(asset_root.resolve())
+
+        raw_urdf = kinematics.get("urdf_path")
+        if raw_urdf:
+            urdf_path = Path(raw_urdf)
+            if not urdf_path.is_absolute():
+                urdf_path = config_dir / urdf_path
+            if not urdf_path.is_file():
+                urdf_path = config_dir / Path(raw_urdf).name
+            if not urdf_path.is_file():
+                raise FileNotFoundError(
+                    f"Curobo URDF does not exist: {raw_urdf!s}; "
+                    f"looked for {urdf_path}. Check {self.yml_path}."
+                )
+            kinematics["urdf_path"] = str(urdf_path.resolve())
 
     def __del__(self):
         try:

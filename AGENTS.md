@@ -1,4 +1,4 @@
-# RoboDojo — Claude Code Guide
+# RoboDojo
 
 ## Project Overview
 
@@ -259,7 +259,6 @@ When creating a PR (`gh pr create`):
 - Editing policy logic in RoboDojo instead of XPolicyLab
 - Running policy `setup_eval_*` without CWD in the policy directory
 - Treating submodule content as owned by this repo unless explicitly updating the gitlink pin
-
 
 
 ## Coding Rules

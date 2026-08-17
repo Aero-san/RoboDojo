@@ -91,11 +91,18 @@ run_eval() {
   local seed="0"
   local policy_gpu="0"
   local env_gpu="0"
+  local policy_gpu_explicit="false"
+  local env_gpu_explicit="false"
   local policy_env=""
   local eval_env="RoboDojo"
   local policy_dir=""
   local eval_num="${EVAL_NUM:-}"
+  local num_envs="${ROBODOJO_NUM_ENVS:-}"
+  local max_steps="${ROBODOJO_MAX_STEPS:-}"
+  local layout_shard="${ROBODOJO_LAYOUT_SHARD:-}"
   local dry_run="false"
+  local save_video="true"
+  local rollout_dir="${ROBODOJO_ROLLOUT_DIR:-}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -106,12 +113,18 @@ run_eval() {
       --expert-num) need_value "$@"; expert_num="$2"; shift 2 ;;
       --action-type) need_value "$@"; action_type="$2"; shift 2 ;;
       --seed) need_value "$@"; seed="$2"; shift 2 ;;
-      --policy-gpu) need_value "$@"; policy_gpu="$2"; shift 2 ;;
-      --env-gpu) need_value "$@"; env_gpu="$2"; shift 2 ;;
+      --policy-gpu) need_value "$@"; policy_gpu="$2"; policy_gpu_explicit="true"; shift 2 ;;
+      --env-gpu) need_value "$@"; env_gpu="$2"; env_gpu_explicit="true"; shift 2 ;;
       --policy-env) need_value "$@"; policy_env="$2"; shift 2 ;;
       --eval-env) need_value "$@"; eval_env="$2"; shift 2 ;;
       --policy-dir) need_value "$@"; policy_dir="$(abs_path "$2")"; shift 2 ;;
       --eval-num) need_value "$@"; eval_num="$2"; shift 2 ;;
+      --num-envs) need_value "$@"; num_envs="$2"; shift 2 ;;
+      --max-steps) need_value "$@"; max_steps="$2"; shift 2 ;;
+      --layout-shard) need_value "$@"; layout_shard="$2"; shift 2 ;;
+      --save-video) save_video="true"; shift ;;
+      --no-video) save_video="false"; shift ;;
+      --rollout-dir) need_value "$@"; rollout_dir="$(abs_path "$2")"; shift 2 ;;
       --dry-run) dry_run="true"; shift ;;
       -h|--help)
         cat <<'EOF'
@@ -125,12 +138,18 @@ Required:
 
 Common options:
   --eval-num NUM|native  Override EVAL_NUM for this eval; use `native` for per-task counts from _task.yml
+  --num-envs NUM          Vectorized Isaac environments in this client process
+  --max-steps NUM         Override the task's maximum deployed actions per episode
+  --layout-shard I/N      Use non-overlapping layout shard I out of N (zero-based)
+  --save-video           Save one MP4 per camera and rollout (default)
+  --no-video             Disable MP4 encoding; camera observations remain enabled for vision policies
+  --rollout-dir PATH      Record state/action/camera trajectories with simulator success labels
   --env-cfg NAME        env_cfg stem (default: arx_x5)
   --expert-num NUM      Expert-data count for policy eval.sh files that accept it (default: 100)
   --action-type NAME    Policy action type (default: ee)
   --seed NUM            Eval seed / layout seed (default: 0)
-  --policy-gpu ID       Policy server GPU (default: 0)
-  --env-gpu ID          Isaac Sim GPU (default: 0)
+  --policy-gpu ID       Policy server GPU (default: 0; auto-split with multiple visible GPUs)
+  --env-gpu ID          Isaac Sim GPU (default: 0; auto-split to the second visible GPU)
   --eval-env ENV        Simulator conda env (default: RoboDojo)
   --dry-run             Print command without running it
 
@@ -149,9 +168,51 @@ EOF
     echo "[robodojo eval] --policy-dir, --task, --ckpt, and --policy-env are required" >&2
     exit 2
   fi
+  if [[ -n "${num_envs}" && ! "${num_envs}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[robodojo eval] --num-envs must be a positive integer" >&2
+    exit 2
+  fi
+  if [[ -n "${max_steps}" && ! "${max_steps}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[robodojo eval] --max-steps must be a positive integer" >&2
+    exit 2
+  fi
+  if [[ -n "${layout_shard}" ]]; then
+    if [[ ! "${layout_shard}" =~ ^([0-9]+)/([1-9][0-9]*)$ ]]; then
+      echo "[robodojo eval] --layout-shard must use zero-based I/N syntax" >&2
+      exit 2
+    fi
+    if (( BASH_REMATCH[1] >= BASH_REMATCH[2] )); then
+      echo "[robodojo eval] layout shard index must be smaller than shard count" >&2
+      exit 2
+    fi
+  fi
+  local visible_gpu_list="${CUDA_VISIBLE_DEVICES:-}"
+  local -a visible_gpu_ids=()
+  if [[ -n "${visible_gpu_list}" ]]; then
+    IFS=',' read -r -a visible_gpu_ids <<< "${visible_gpu_list}"
+  fi
+  if [[ ${#visible_gpu_ids[@]} -ge 2 && "${policy_gpu_explicit}" == "false" && "${env_gpu_explicit}" == "false" ]]; then
+    policy_gpu="${visible_gpu_ids[0]}"
+    env_gpu="${visible_gpu_ids[1]}"
+    echo "[robodojo eval] multiple GPUs detected: auto-split policy_gpu=${policy_gpu}, env_gpu=${env_gpu}"
+  elif [[ "${policy_gpu}" == "${env_gpu}" && ${#visible_gpu_ids[@]} -ge 2 ]]; then
+    echo "[robodojo eval] policy GPU and env GPU are both ${policy_gpu}; use different IDs to avoid shared-GPU OOM" >&2
+    exit 2
+  fi
   if [[ ! -f "${policy_dir}/eval.sh" ]]; then
     echo "[robodojo eval] policy eval.sh not found: ${policy_dir}/eval.sh" >&2
     exit 1
+  fi
+
+  # Policy deploy.yml is the source of truth for the action representation.
+  # Keep the generic CLI default for legacy policies, but make an accidental
+  # mismatch visible before starting Isaac Sim (Pi_05 uses joint actions).
+  local policy_action_type=""
+  if [[ -f "${policy_dir}/deploy.yml" ]]; then
+    policy_action_type="$(sed -n 's/^[[:space:]]*action_type:[[:space:]]*//p' "${policy_dir}/deploy.yml" | head -n 1 | tr -d '\"' | tr -d "'")"
+  fi
+  if [[ -n "${policy_action_type}" && "${policy_action_type}" != "${action_type}" ]]; then
+    echo "[robodojo eval][WARN] --action-type=${action_type} differs from ${policy_dir}/deploy.yml action_type=${policy_action_type}; pass --action-type ${policy_action_type} unless this override is intentional." >&2
   fi
 
   local eval_args=()
@@ -187,9 +248,30 @@ EOF
   if [[ -n "${eval_num}" && "${eval_num}" != "native" ]]; then
     export EVAL_NUM="${eval_num}"
   fi
+  if [[ -n "${num_envs}" ]]; then
+    export ROBODOJO_NUM_ENVS="${num_envs}"
+  else
+    unset ROBODOJO_NUM_ENVS 2>/dev/null || true
+  fi
+  if [[ -n "${max_steps}" ]]; then
+    export ROBODOJO_MAX_STEPS="${max_steps}"
+  else
+    unset ROBODOJO_MAX_STEPS 2>/dev/null || true
+  fi
+  if [[ -n "${layout_shard}" ]]; then
+    export ROBODOJO_LAYOUT_SHARD="${layout_shard}"
+  else
+    unset ROBODOJO_LAYOUT_SHARD 2>/dev/null || true
+  fi
+  export ROBODOJO_SAVE_VIDEO="$([[ "${save_video}" == "true" ]] && echo 1 || echo 0)"
+  if [[ -n "${rollout_dir}" ]]; then
+    export ROBODOJO_ROLLOUT_DIR="${rollout_dir}"
+  else
+    unset ROBODOJO_ROLLOUT_DIR 2>/dev/null || true
+  fi
 
   echo "[robodojo eval] policy_dir=${policy_dir}"
-  echo "[robodojo eval] task=${task} env_cfg=${env_cfg} eval_num=${EVAL_NUM:-default}"
+  echo "[robodojo eval] task=${task} env_cfg=${env_cfg} eval_num=${EVAL_NUM:-default} num_envs=${num_envs:-config} max_steps=${max_steps:-task-default} layout_shard=${layout_shard:-all} save_video=${save_video} rollout_dir=${rollout_dir:-disabled}"
 
   if [[ "${dry_run}" == "true" ]]; then
     printf '[robodojo eval] dry-run: bash %q' "${ROOT_DIR}/scripts/internal/run_policy_eval.sh"
@@ -340,6 +422,7 @@ run_client() {
   local ckpt="external"
   local action_type="ee"
   local eval_num="${EVAL_NUM:-}"
+  local max_steps="${ROBODOJO_MAX_STEPS:-}"
   local connect_timeout="5"
   local only_tasks=""
   local tasks_file=""
@@ -363,6 +446,7 @@ run_client() {
       --ckpt) need_value "$@"; ckpt="$2"; shift 2 ;;
       --action-type) need_value "$@"; action_type="$2"; shift 2 ;;
       --eval-num) need_value "$@"; eval_num="$2"; shift 2 ;;
+      --max-steps) need_value "$@"; max_steps="$2"; shift 2 ;;
       --connect-timeout) need_value "$@"; connect_timeout="$2"; shift 2 ;;
       --only) need_value "$@"; only_tasks="$2"; shift 2 ;;
       --tasks-file) need_value "$@"; tasks_file="$2"; shift 2 ;;
@@ -399,6 +483,7 @@ Required:
 
 Common options:
   --eval-num NUM|native  Override EVAL_NUM for this run; `native` uses per-task counts
+  --max-steps NUM        Override the task's maximum deployed actions per episode
   --env-cfg NAME         env_cfg stem (default: arx_x5)
   --seed NUM             Eval seed / layout seed (default: 0)
   --env-gpu ID           Isaac Sim GPU (default: 0)
@@ -427,6 +512,11 @@ EOF
     if [[ -z "${policy_name}" ]]; then
       policy_name="$(resolve_policy_name "${policy_dir}")"
     fi
+  fi
+
+  if [[ -n "${max_steps}" && ! "${max_steps}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[robodojo client] --max-steps must be a positive integer" >&2
+    exit 2
   fi
 
   if [[ -z "${policy_name}" ]]; then
@@ -488,6 +578,9 @@ EOF
     if [[ -n "${eval_num}" ]]; then
       batch_args+=(--eval-num "${eval_num}")
     fi
+    if [[ -n "${max_steps}" ]]; then
+      batch_args+=(--max-steps "${max_steps}")
+    fi
     if [[ "${dry_run}" == "true" ]]; then
       batch_args+=(--dry-run)
     fi
@@ -509,6 +602,11 @@ EOF
   if [[ -n "${eval_num}" && "${eval_num}" != "native" ]]; then
     export EVAL_NUM="${eval_num}"
   fi
+  if [[ -n "${max_steps}" ]]; then
+    export ROBODOJO_MAX_STEPS="${max_steps}"
+  else
+    unset ROBODOJO_MAX_STEPS 2>/dev/null || true
+  fi
 
   local client_args=(
     --dataset_name "${dataset}"
@@ -523,8 +621,11 @@ EOF
     --additional_info "${additional_info}"
     --seed "${seed}"
   )
+  if [[ -n "${max_steps}" ]]; then
+    client_args+=(--max_steps "${max_steps}")
+  fi
 
-  echo "[robodojo client] task=${task} policy=${policy_name} server=${policy_host}:${policy_port} eval_num=${EVAL_NUM:-default}"
+  echo "[robodojo client] task=${task} policy=${policy_name} server=${policy_host}:${policy_port} eval_num=${EVAL_NUM:-default} max_steps=${max_steps:-task-default}"
 
   if [[ "${dry_run}" == "true" ]]; then
     printf '[robodojo client] dry-run: bash %q' "${ROOT_DIR}/scripts/eval_policy.sh"

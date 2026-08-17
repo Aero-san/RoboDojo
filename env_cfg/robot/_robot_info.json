@@ -2,5 +2,25 @@
     "dual_x5": {
         "arm_dim": [6, 6],
         "ee_dim": [1, 1]
+    },
+    "dual_x5_and_franka_competition": {
+        "arm_dim": [6, 6],
+        "ee_dim": [1, 1]
+    },
+    "arx_x5": {
+        "arm_dim": [6, 6],
+        "ee_dim": [1, 1]
+    },
+    "piper": {
+        "arm_dim": [6, 6],
+        "ee_dim": [1, 1]
+    },
+    "piper_x": {
+        "arm_dim": [6, 6],
+        "ee_dim": [1, 1]
+    },
+    "franka": {
+        "arm_dim": [7],
+        "ee_dim": [1]
     }
 }
