@@ -114,19 +114,19 @@ def _episode_table(
     )
 
 
-def _demo_records(root: Path, task: str, max_episodes: int, seed: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _demo_records(root: Path, task: str, max_episodes: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     info = _json(root / "meta" / "info.json")
     episodes, _ = filter_episode_metadata(_jsonl(root / "meta" / "episodes.jsonl"), task)
-    if max_episodes > 0 and len(episodes) > max_episodes:
-        episodes = random.Random(seed).sample(episodes, max_episodes)
+    episodes = sorted(episodes, key=lambda row: int(row["episode_index"]))
+    if max_episodes > 0:
+        episodes = episodes[:max_episodes]
     template = info.get("data_path", "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet")
     chunk_size = int(info.get("chunks_size", 1000))
     records = []
-    sorted_episodes = sorted(episodes, key=lambda row: int(row["episode_index"]))
     for metadata in progress_iter(
-        sorted_episodes,
+        episodes,
         desc="Loading demonstrations",
-        total=len(sorted_episodes),
+        total=len(episodes),
         unit="episode",
     ):
         episode = int(metadata["episode_index"])
@@ -201,11 +201,15 @@ def _rollout_records(root: Path, task: str, max_episodes: int, seed: int) -> lis
 
 
 def main(args: argparse.Namespace) -> None:
+    if args.max_demo_episodes < 0:
+        raise ValueError("--max-demo-episodes must be non-negative.")
+    if args.max_rollout_episodes < 0:
+        raise ValueError("--max-rollout-episodes must be non-negative.")
     demo_root = Path(args.demo_root).expanduser().resolve()
     output = Path(args.output).expanduser().resolve()
     if output.exists():
         raise FileExistsError(f"Replay buffer output already exists: {output}")
-    source_info, records = _demo_records(demo_root, args.task, args.max_demo_episodes, args.seed)
+    source_info, records = _demo_records(demo_root, args.task, args.max_demo_episodes)
     for index, raw_root in enumerate(args.rollout_root):
         records.extend(
             _rollout_records(

@@ -206,27 +206,107 @@ def _task_slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
 
 
+_TASK_SELECTOR_STOPWORDS = {
+    "a",
+    "all",
+    "and",
+    "at",
+    "board",
+    "by",
+    "from",
+    "in",
+    "into",
+    "of",
+    "on",
+    "play",
+    "the",
+    "then",
+    "to",
+    "using",
+    "with",
+}
+
+_TASK_SELECTOR_SYNONYMS = {
+    "classify": {"sort"},
+    "fasten": {"tighten"},
+    "imitate": {"observe"},
+    "sequence": {"order"},
+    "sorting": {"order"},
+}
+
+# A few benchmark names are intentionally much shorter than their natural
+# language instructions.  These hints are still matched against metadata;
+# they do not hard-code episode indices or alter the source dataset.
+_TASK_SELECTOR_HINTS = {
+    "organize_table": {"mouse", "keyboard", "figurine", "drawer"},
+    "swap_blocks": {"empty", "mat", "button"},
+    "swap_t": {"t", "shaped", "orientation"},
+}
+
+
+def _task_selector_tokens(value: str) -> set[str]:
+    """Return the content words used for a benchmark-style task selector.
+
+    The task names used by RoboDojo (for example ``fill_egg_holder``) are
+    concise labels, whereas the v2.1 metadata stores natural-language
+    instructions (for example ``Place the four eggs ...``).  Comparing all
+    words literally therefore misses valid tasks.  Removing grammatical
+    words and normalising simple plurals gives us a small, deterministic
+    bridge without introducing a fuzzy-edit-distance dependency.
+    """
+    tokens = set(_task_slug(value).split("_")) - _TASK_SELECTOR_STOPWORDS
+    normalised: set[str] = set()
+    for token in tokens:
+        if len(token) > 3 and token.endswith("ies"):
+            token = f"{token[:-3]}y"
+        elif len(token) > 3 and token.endswith("s"):
+            token = token[:-1]
+        elif token == "toaster":
+            token = "toast"
+        normalised.add(token)
+        normalised.update(_TASK_SELECTOR_SYNONYMS.get(token, ()))
+    return normalised
+
+
+def _episode_task_text(episode: dict[str, Any], task_map: dict[int, str]) -> str:
+    tasks = episode.get("tasks", [])
+    if not isinstance(tasks, list) or not tasks:
+        return ""
+    value = tasks[0]
+    if isinstance(value, int):
+        return task_map.get(value, "")
+    text = str(value).strip()
+    if text.isdigit():
+        return task_map.get(int(text), "")
+    return text
+
+
 def filter_episode_metadata(
-    episodes: list[dict[str, Any]], selector: str | None,
+    episodes: list[dict[str, Any]],
+    selector: str | None,
+    task_metadata: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Select one RoboDojo task by text or a benchmark-style slug.
 
     RoboDojo's v2.1 episode metadata stores the natural-language instruction,
     while benchmark commands usually use names such as ``stack_bowls``.  An
-    exact instruction, an exact normalized slug, or a unique token match is
-    accepted.  Ambiguous short selectors fail instead of silently mixing
-    tasks.
+    exact instruction, an exact normalized slug, or a unique content-word
+    match is accepted.  Ambiguous short selectors fail instead of silently
+    mixing tasks.  ``task_metadata`` is read from ``meta/tasks.jsonl`` when
+    available; it also lets exports that store a numeric task id in
+    ``episodes.jsonl`` be filtered correctly.
     """
     if selector is None or not selector.strip():
         return episodes, None
     requested = selector.strip()
+    task_map = {
+        int(row["task_index"]): str(row.get("task", row.get("instruction", ""))).strip()
+        for row in (task_metadata or [])
+        if "task_index" in row
+    }
     by_text: dict[str, list[dict[str, Any]]] = {}
     for episode in episodes:
-        tasks = episode.get("tasks", [])
-        if isinstance(tasks, list) and tasks:
-            text = str(tasks[0]).strip()
-        else:
-            text = ""
+        text = _episode_task_text(episode, task_map)
         if text:
             by_text.setdefault(text, []).append(episode)
     if not by_text:
@@ -234,17 +314,35 @@ def filter_episode_metadata(
 
     candidates = list(by_text)
     requested_folded = requested.casefold()
+    requested_slug = _task_slug(requested)
+    selector_hint = _TASK_SELECTOR_HINTS.get(requested_slug.removesuffix("_random"))
     matches = [text for text in candidates if text.casefold() == requested_folded]
     if not matches:
-        requested_slug = _task_slug(requested)
-        matches = [text for text in candidates if _task_slug(text) == requested_slug]
-    if not matches:
+        if requested_slug.isdigit() and int(requested_slug) in task_map:
+            matches = [task_map[int(requested_slug)]]
+        else:
+            matches = [text for text in candidates if _task_slug(text) == requested_slug]
+    if not matches and selector_hint is None:
         requested_tokens = set(_task_slug(requested).split("_")) - {""}
         matches = [
             text
             for text in candidates
             if requested_tokens and requested_tokens <= set(_task_slug(text).split("_"))
         ]
+    if not matches:
+        # Canonical RoboDojo names and metadata instructions use different
+        # verbs (``fill`` vs ``place``, ``put`` vs ``throw``) and sometimes
+        # different grammatical forms (``bottles`` vs ``bottle``).  Match on
+        # the distinctive content words as a final, deterministic step.
+        requested_tokens = selector_hint or _task_selector_tokens(requested)
+        scored = [
+            (len(requested_tokens & _task_selector_tokens(text)), text)
+            for text in candidates
+        ]
+        best_score = max((score for score, _ in scored), default=0)
+        best_candidates = [text for score, text in scored if score == best_score]
+        if best_score >= 2 or (best_score == 1 and len(best_candidates) == 1):
+            matches = best_candidates
     if len(matches) != 1:
         available = "; ".join(candidates[:12])
         if len(matches) > 1:
@@ -260,7 +358,7 @@ def filter_episode_metadata(
     selected = [
         episode
         for episode in episodes
-        if episode.get("tasks") and str(episode["tasks"][0]).strip() == selected_text
+        if _episode_task_text(episode, task_map) == selected_text
     ]
     if not selected:
         raise ValueError(f"Task selector {selector!r} matched no episodes.")
@@ -347,7 +445,11 @@ class RoboDojoDataset:
         self._episodes = _load_jsonl(self.root / "meta" / "episodes.jsonl")
         if not self._episodes:
             raise ValueError(f"Dataset has no episodes: {self.root}")
-        self._episodes, self.task_name = filter_episode_metadata(self._episodes, task_selector)
+        task_metadata_path = self.root / "meta" / "tasks.jsonl"
+        task_metadata = _load_jsonl(task_metadata_path) if task_metadata_path.exists() else None
+        self._episodes, self.task_name = filter_episode_metadata(
+            self._episodes, task_selector, task_metadata
+        )
 
         rewards: dict[int, np.ndarray] = {}
         self._row_episode: list[int] = []

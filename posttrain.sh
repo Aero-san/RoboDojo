@@ -26,20 +26,7 @@ bash scripts/robodojo.sh eval \
    --no-video
 
 
-TASK_NAME=push_T \
-DEMO_ROOT=$PWD/data/RoboDojo_lerobot_v21_video \
-INITIAL_POLICY_CHECKPOINT=$PWD/XPolicyLab/policy/Pi_05/checkpoints/RoboDojo-sim-arx_x5-joint-2/59999 \
-RECAP_ITERATIONS=3 \
-RECAP_ROLLOUT_EPISODES=50 \
-TRAIN_GPUS=0,1,2,3,4,5,6,7 \
-WCM_TRAIN_GPUS=0,1,2,3,4,5,6,7 \
-OPENPI_FSDP_DEVICES=2 \
-OPENPI_BATCH_SIZE=32 \
-WCM_PER_DEVICE_BATCH_SIZE=16 \
-POLICY_GPU=0 \
-ENV_GPU=1 \
-bash scripts/posttrain/run_pi05_recap.sh --task push_T --initial-policy-checkpoint $PWD/XPolicyLab/policy/Pi_05/checkpoints/RoboDojo-sim-arx_x5-joint-2/59999
-
+# evaluate recap
 CUDA_VISIBLE_DEVICES=4 AAC_ENABLED=0 bash scripts/robodojo.sh eval \
     --policy-dir XPolicyLab/policy/Pi_05 \
     --policy-env openpi \
@@ -49,6 +36,8 @@ CUDA_VISIBLE_DEVICES=4 AAC_ENABLED=0 bash scripts/robodojo.sh eval \
     --action-type joint \
     --eval-num 10
 
+
+# rltoken+recap+wcm
 RLTOKEN_RECAP_ROLLOUT_EPISODES=40 \
 RLTOKEN_ROLLOUT_ENVS_PER_WORKER=4 \
 RLTOKEN_ROLLOUT_GPUS=0,1,2,3,4,5,6,7 \
@@ -63,17 +52,8 @@ bash scripts/posttrain/run_pi05_rltoken_recap.sh \
 --encoder-resume /share/mingyang/RoboDojo/outputs/rltoken_recap/push_t/iteration_01/encoder.pt \
 --actor-mode direct 
 
-  File "/share/mingyang/RoboDojo/third_party/curobo/curobo/_src/robot/parser/parser_urdf.py", line 54, in __init__
-    self._robot = yourdfpy.URDF.load(
-                  ^^^^^^^^^^^^^^^^^^^
-  File "/share/mingyang/miniconda3/envs/RoboDojo/lib/python3.11/site-packages/yourdfpy/urdf.py", line 958, in load
-    raise ValueError("{} is not a file".format(fname_or_file))
-ValueError: /home/gmy/robodojo-work/RoboDojo/Assets/Robots/x5/X5A.urdf is not a file
 
-
-
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 bash scripts/robodojo.sh eval     --policy-dir XPolicyLab/policy/Pi_05     --policy-env openpi     --ckpt RoboDojo-sim-arx_x5-joint-0     --env-cfg arx_x5     --action-type joint     --eval-num 10     --task pour_by_language
-
+# normal evaluate 
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
 bash scripts/robodojo.sh eval   \
 --policy-dir XPolicyLab/policy/Pi_05   \
@@ -84,6 +64,7 @@ bash scripts/robodojo.sh eval   \
 --action-type joint \
 --save-video
 
+# evaluate wcm rltoken actor
 POSTTRAIN_MODE=wcm_actor \
 POSTTRAIN_CHECKPOINT="$(cat outputs/rltoken_recap_direct/push_t/latest_actor.txt)" \
 bash scripts/robodojo.sh eval \
@@ -95,3 +76,24 @@ bash scripts/robodojo.sh eval \
     --action-type joint \
     --eval-num 10
 
+# world critic model + recap on pi05
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+TRAIN_GPUS=0,1,2,3 \
+WCM_TRAIN_GPUS=0,1,2,3 \
+NUM_TRAIN_STEPS=500 \
+RECAP_VALUE_VIDEO_EPISODES=3 \
+RECAP_VALUE_VIDEO_GPU=2 \
+TASK_NAME=put_bottles_into_dustbin \
+DEMO_ROOT=$PWD/data/RoboDojo_lerobot_v21_video \
+RECAP_ITERATIONS=20 \
+RECAP_ROLLOUT_EPISODES=10 \
+RECAP_MAX_DEMO_EPISODES=100 \
+INITIAL_WCM_CHECKPOINT=/share/mingyang/RoboDojo/outputs/wcm/robodojo_pi05/deploy.pt \
+OPENPI_FSDP_DEVICES=2 \
+OPENPI_BATCH_SIZE=32 \
+WCM_PER_DEVICE_BATCH_SIZE=16 \
+POLICY_GPU=0 \
+ENV_GPU=1 \
+bash scripts/posttrain/run_pi05_recap.sh --task put_bottles_into_dustbin --initial-policy-checkpoint $PWD/XPolicyLab/policy/Pi_05/checkpoints/RoboDojo-put_bottles_into_dustbin-arx_x5-joint-0/11999
+
+recap 10000steps/9hrs

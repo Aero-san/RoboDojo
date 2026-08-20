@@ -17,6 +17,7 @@
 | [posttrain/train_pi05.py](posttrain/train_pi05.py) | OpenPI Pi0.5 fine-tuning with explicit freeze modes |
 | [posttrain/select_wcm_episodes.py](posttrain/select_wcm_episodes.py) | Rank/filter demonstrations with a trained WCM |
 | [posttrain/run_pi05_recap.sh](posttrain/run_pi05_recap.sh) | Iterated simulator rollout + WCM + RECAP Pi0.5 training |
+| [posttrain/render_rollout_value_videos.py](posttrain/render_rollout_value_videos.py) | Score rollout frames with WCM and render official value overlays |
 | [posttrain/build_replay_buffer.py](posttrain/build_replay_buffer.py) | Aggregate SFT demonstrations and labelled policy rollouts |
 | [posttrain/annotate_recap_advantages.py](posttrain/annotate_recap_advantages.py) | Compute WCM N-step advantages and RECAP conditions |
 
@@ -173,6 +174,25 @@ INITIAL_POLICY_CHECKPOINT=$PWD/XPolicyLab/policy/Pi_05/checkpoints/my_sft/59999 
 RECAP_ITERATIONS=3 RECAP_ROLLOUT_EPISODES=50 \
 bash scripts/posttrain/run_pi05_recap.sh
 ```
+
+After each iteration, the launcher scores the first three newly collected
+rollouts by default (or all of them when fewer than three were requested) and
+writes head-view monitoring videos to
+`iteration_XX/value_videos/videos/`. The translucent lower-half chart is the
+official WCM `episode_value_video` renderer. WCM inference still consumes all
+camera views listed in its checkpoint; only the presentation layer uses the
+head camera. Set `RECAP_VALUE_VIDEO_EPISODES=N` or pass
+`--value-video-episodes N` to choose the count, and use `0` to disable it.
+`RECAP_VALUE_VIDEO_GPU` selects the inference card. The default fixed y-axis
+of `[-1, 1]` makes values comparable between iterations; it can be changed
+with `RECAP_VALUE_VIDEO_Y_MIN` and `RECAP_VALUE_VIDEO_Y_MAX`. Raw curves,
+success labels, alignment reports, previews, and a summary JSON are retained
+beside the videos.
+
+Set `RECAP_MAX_DEMO_EPISODES=20`, or pass `--max-demo-episodes 20`, to use
+only the first 20 demonstrations after filtering to the requested task and
+sorting by original `episode_index`. The same fixed subset is included in
+every replay-buffer iteration; `0` (the default) keeps all demonstrations.
 
 The default RECAP settings use 50-step value lookahead, a per-task threshold
 selecting roughly 40% positive rollout advantages, `gamma=1`, and `beta=1`.

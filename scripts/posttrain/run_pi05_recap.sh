@@ -45,7 +45,10 @@ INITIAL_POLICY_CHECKPOINT="${INITIAL_POLICY_CHECKPOINT:-}"
 INITIAL_WCM_CHECKPOINT="${INITIAL_WCM_CHECKPOINT:-}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${ROOT_DIR}/outputs/recap}"
 ITERATIONS="${RECAP_ITERATIONS:-1}"
-ROLLOUT_EPISODES="${RECAP_ROLLOUT_EPISODES:-40}"
+ROLLOUT_EPISODES="${RECAP_ROLLOUT_EPISODES:-10}"
+MAX_DEMO_EPISODES="${RECAP_MAX_DEMO_EPISODES:-0}"
+VALUE_VIDEO_EPISODES="${RECAP_VALUE_VIDEO_EPISODES:-}"
+VALUE_VIDEO_GPU="${RECAP_VALUE_VIDEO_GPU:-}"
 ENV_CFG_TYPE="${ENV_CFG_TYPE:-arx_x5}"
 ACTION_TYPE="${ACTION_TYPE:-joint}"
 TRAIN_GPUS="${TRAIN_GPUS:-0,1,2,3,4,5,6,7}"
@@ -58,7 +61,8 @@ FINETUNE_MODE="${PI05_FINETUNE_MODE:-action_expert_lora}"
 GAMMA="${RECAP_GAMMA:-1.0}"
 BETA="${RECAP_BETA:-1.0}"
 FAILURE_PENALTY="${WCM_FAILURE_PENALTY:-300}"
-
+NUM_TRAIN_STEPS="${NUM_TRAIN_STEPS:-1000}"
+echo $NUM_TRAIN_STEPS
 usage() {
   cat <<'EOF'
 Usage: bash scripts/posttrain/run_pi05_recap.sh [options]
@@ -73,6 +77,8 @@ Options:
   --output-root PATH                  Run output root (default: outputs/recap)
   --iterations N                      Policy-improvement iterations (default: 3)
   --rollout-episodes N                Simulator episodes per iteration (default: 50)
+  --max-demo-episodes N               Use first N task demonstrations (0: all)
+  --value-video-episodes N            Render N WCM-value rollout videos per iteration (0: disable)
   --env-cfg NAME                      RoboDojo robot/environment config
   --action-type joint|ee              Policy action representation
   --finetune-mode MODE                full/action_expert/*_lora mode
@@ -80,6 +86,7 @@ Options:
   --wcm-train-gpus IDS                WCM DDP GPUs (default: --train-gpus)
   --policy-gpu ID                     Rollout policy-server GPU
   --env-gpu ID                        Rollout Isaac Sim GPU
+  --num-train-steps                   Pi0.5 training steps per iteration
 
 Additional optimizer, device, WCM, and RECAP controls are documented in
 configs/posttrain/pi05_recap.env.example.
@@ -95,6 +102,8 @@ while [[ $# -gt 0 ]]; do
     --output-root) OUTPUT_ROOT="$2"; shift 2 ;;
     --iterations) ITERATIONS="$2"; shift 2 ;;
     --rollout-episodes) ROLLOUT_EPISODES="$2"; shift 2 ;;
+    --max-demo-episodes) MAX_DEMO_EPISODES="$2"; shift 2 ;;
+    --value-video-episodes) VALUE_VIDEO_EPISODES="$2"; shift 2 ;;
     --env-cfg) ENV_CFG_TYPE="$2"; shift 2 ;;
     --action-type) ACTION_TYPE="$2"; shift 2 ;;
     --finetune-mode) FINETUNE_MODE="$2"; shift 2 ;;
@@ -102,6 +111,7 @@ while [[ $# -gt 0 ]]; do
     --wcm-train-gpus) WCM_TRAIN_GPUS="$2"; shift 2 ;;
     --policy-gpu) POLICY_GPU="$2"; shift 2 ;;
     --env-gpu) ENV_GPU="$2"; shift 2 ;;
+    --num-train-steps) NUM_TRAIN_STEPS="$2"; shift 2 ;;
     -h|--help)
       usage
       exit 0
@@ -122,6 +132,13 @@ if [[ -n "${INITIAL_WCM_CHECKPOINT}" && ! -f "${INITIAL_WCM_CHECKPOINT}" ]]; the
 fi
 [[ "${ITERATIONS}" =~ ^[1-9][0-9]*$ ]] || { echo "--iterations must be positive" >&2; exit 2; }
 [[ "${ROLLOUT_EPISODES}" =~ ^[1-9][0-9]*$ ]] || { echo "--rollout-episodes must be positive" >&2; exit 2; }
+VALUE_VIDEO_EPISODES="${VALUE_VIDEO_EPISODES:-$((ROLLOUT_EPISODES < 3 ? ROLLOUT_EPISODES : 3))}"
+[[ "${MAX_DEMO_EPISODES}" =~ ^[0-9]+$ ]] || { echo "--max-demo-episodes must be non-negative" >&2; exit 2; }
+[[ "${VALUE_VIDEO_EPISODES}" =~ ^[0-9]+$ ]] || { echo "--value-video-episodes must be non-negative" >&2; exit 2; }
+(( VALUE_VIDEO_EPISODES <= ROLLOUT_EPISODES )) || {
+  echo "--value-video-episodes cannot exceed --rollout-episodes" >&2
+  exit 2
+}
 
 parse_gpu_ids() {
   local raw_ids="${1//[[:space:]]/}"
@@ -154,6 +171,7 @@ WCM_TRAIN_GPUS=$(IFS=','; echo "${WCM_TRAIN_GPU_IDS[*]}")
 GPU_COUNT="${#POLICY_TRAIN_GPU_IDS[@]}"
 WCM_GPU_COUNT="${#WCM_TRAIN_GPU_IDS[@]}"
 POLICY_GPU="${POLICY_GPU:-${POLICY_TRAIN_GPU_IDS[0]}}"
+VALUE_VIDEO_GPU="${VALUE_VIDEO_GPU:-${WCM_TRAIN_GPU_IDS[0]}}"
 if [[ -z "${ENV_GPU}" ]]; then
   if (( GPU_COUNT > 1 )); then
     ENV_GPU="${POLICY_TRAIN_GPU_IDS[1]}"
@@ -163,6 +181,7 @@ if [[ -z "${ENV_GPU}" ]]; then
 fi
 [[ "${POLICY_GPU}" =~ ^[0-9]+$ ]] || { echo "--policy-gpu must be one numeric GPU id" >&2; exit 2; }
 [[ "${ENV_GPU}" =~ ^[0-9]+$ ]] || { echo "--env-gpu must be one numeric GPU id" >&2; exit 2; }
+[[ "${VALUE_VIDEO_GPU}" =~ ^[0-9]+$ ]] || { echo "RECAP_VALUE_VIDEO_GPU must be one numeric GPU id" >&2; exit 2; }
 FSDP_DEVICES="${OPENPI_FSDP_DEVICES:-$(( GPU_COUNT < 2 ? 1 : 2 ))}"
 [[ "${FSDP_DEVICES}" =~ ^[1-9][0-9]*$ ]] || { echo "OPENPI_FSDP_DEVICES must be positive" >&2; exit 2; }
 (( FSDP_DEVICES <= GPU_COUNT && GPU_COUNT % FSDP_DEVICES == 0 )) || {
@@ -180,6 +199,9 @@ fi
 echo "[RECAP devices] WCM DDP=${WCM_TRAIN_GPUS} (${WCM_GPU_COUNT} processes)"
 echo "[RECAP devices] Pi0.5=${TRAIN_GPUS} (${GPU_COUNT} devices, FSDP=${FSDP_DEVICES}, data_parallel=$((GPU_COUNT / FSDP_DEVICES)))"
 echo "[RECAP devices] rollout policy=${POLICY_GPU}, Isaac Sim=${ENV_GPU} (one stateful episode is sequential)"
+if (( VALUE_VIDEO_EPISODES > 0 )); then
+  echo "[RECAP devices] WCM value-video inference=${VALUE_VIDEO_GPU}"
+fi
 export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 
@@ -210,6 +232,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     --demo-root "${DEMO_ROOT}"
     --output "${BUFFER_ROOT}"
     --task "${TASK_NAME}"
+    --max-demo-episodes "${MAX_DEMO_EPISODES}"
     --seed "$((SEED + iteration))"
   )
   for source in "${ROLLOUT_ROOTS[@]}"; do BUFFER_ARGS+=(--rollout-root "${source}"); done
@@ -291,6 +314,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     --env-cfg-type "${ENV_CFG_TYPE}"
     --action-type "${ACTION_TYPE}"
     --norm-stats-dir "${NORM_STATS}"
+    --num-train-steps "${NUM_TRAIN_STEPS}"
     --recap
     --recap-beta "${BETA}"
     --seed "$((SEED + iteration))"
@@ -309,6 +333,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   if [[ "${OPENPI_WANDB_ENABLED:-1}" == "0" ]]; then TRAIN_ARGS+=(--disable-wandb); fi
 
   echo "[RECAP ${iteration}/${ITERATIONS}] updating Pi0.5 with advantage-conditioned flow matching"
+  echo 'using finetune mode ${FINETUNE_MODE}'
   HF_LEROBOT_HOME="${LEROBOT_HOME}" \
   CUDA_VISIBLE_DEVICES="${TRAIN_GPUS}" \
   XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.9}" \
@@ -360,6 +385,24 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   if [[ "${recorded_episodes}" != "${ROLLOUT_EPISODES}" ]]; then
     echo "Expected ${ROLLOUT_EPISODES} rollout episodes, recorded ${recorded_episodes}; see ${ROLLOUT_LOG}" >&2
     exit 1
+  fi
+
+  if (( VALUE_VIDEO_EPISODES > 0 )); then
+    echo "[RECAP ${iteration}/${ITERATIONS}] rendering ${VALUE_VIDEO_EPISODES} rollout videos with WCM value overlays"
+    CUDA_VISIBLE_DEVICES="${VALUE_VIDEO_GPU}" \
+      "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/render_rollout_value_videos.py" \
+        --wcm-checkpoint "${PREVIOUS_WCM}" \
+        --rollout-root "${RAW_ROLLOUTS}" \
+        --output-dir "${ITER_DIR}/value_videos" \
+        --max-episodes "${VALUE_VIDEO_EPISODES}" \
+        --batch-size "${RECAP_VALUE_VIDEO_BATCH_SIZE:-8}" \
+        --device "${RECAP_VALUE_VIDEO_DEVICE:-cuda}" \
+        --precision "${RECAP_VALUE_VIDEO_PRECISION:-bf16}" \
+        --backend "${RECAP_VALUE_VIDEO_BACKEND:-auto}" \
+        --speed "${RECAP_VALUE_VIDEO_SPEED:-1.0}" \
+        --y-min "${RECAP_VALUE_VIDEO_Y_MIN:--1.0}" \
+        --y-max "${RECAP_VALUE_VIDEO_Y_MAX:-1.0}" \
+        --title "WCM RECAP ITER ${iteration}"
   fi
   ROLLOUT_ROOTS+=("${RAW_ROLLOUTS}")
 done

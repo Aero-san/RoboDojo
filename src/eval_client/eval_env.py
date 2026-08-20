@@ -840,6 +840,7 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 if self.rollout_recorder is not None:
                     self.rollout_recorder.abort(unstable_in_batch)
             eval_envs = [e for e in exist_envs if e not in self.unstable_envs]
+            episode_outcomes = []
             for idx, env_idx in enumerate(eval_envs):
                 index = idx + self.success_nums + self.fail_nums
                 episode_score = 0.0
@@ -871,6 +872,15 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                         else "environment_failure"
                     ),
                 }
+                episode_outcomes.append(
+                    {
+                        "env_idx": int(env_idx),
+                        "layout_id": int(self.env_seeds[env_idx]),
+                        "success": bool(self.success[env_idx]),
+                        "score": episode_score,
+                        "steps": int(self.take_action_cnt[env_idx]),
+                    }
+                )
                 if self.rollout_recorder is not None:
                     rollout_path = self.rollout_recorder.finalize(
                         env_idx,
@@ -885,6 +895,14 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                     self.save_video(env_idx, video_path, tag)
                 else:
                     self._abort_video_writers([env_idx])
+
+            # The WebSocket protocol already defines TRIAL_END; report
+            # trajectory outcomes so lightweight RL heads such as BCP can
+            # persist rollout decisions without coupling policy code to Isaac.
+            self.model_client.call(
+                func_name="trial_end",
+                obs={"task_name": self.task_name, "episodes": episode_outcomes},
+            )
 
             # Drop streams for envs not saved this batch (e.g. unstable ones).
             self._abort_video_writers()

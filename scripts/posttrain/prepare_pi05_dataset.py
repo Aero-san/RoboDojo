@@ -155,7 +155,9 @@ def main(args: argparse.Namespace) -> None:
     root = Path(args.dataset_root).expanduser().resolve()
     info = json.loads((root / "meta" / "info.json").read_text(encoding="utf-8"))
     episodes = _jsonl(root / "meta" / "episodes.jsonl")
-    episodes, _ = filter_episode_metadata(episodes, args.task)
+    task_metadata_path = root / "meta" / "tasks.jsonl"
+    task_metadata = _jsonl(task_metadata_path) if task_metadata_path.exists() else None
+    episodes, _ = filter_episode_metadata(episodes, args.task, task_metadata)
     labels = _labels(args.episode_labels)
     advantage_labels = _advantage_labels(args.advantage_labels)
     if labels and any(int(row["episode_index"]) not in labels for row in episodes):

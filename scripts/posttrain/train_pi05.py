@@ -175,7 +175,7 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--finetune-mode",
         choices=("full", "action_expert", "action_expert_lora", "paligemma_lora", "all_lora"),
-        default="action_expert",
+        default="action_expert_lora",
     )
     parser.add_argument("--action-expert-variant", default="")
     parser.add_argument("--paligemma-variant", default="")
@@ -183,10 +183,10 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fsdp-devices", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=0)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--num-train-steps", type=int, default=0)
+    parser.add_argument("--num-train-steps", type=int, default=100)
     parser.add_argument("--save-interval", type=int, default=0)
     parser.add_argument("--log-interval", type=int, default=0)
-    parser.add_argument("--learning-rate", type=float, default=0.0)
+    parser.add_argument("--learning-rate", type=float, default=5e-6)
     parser.add_argument("--warmup-steps", type=int, default=0)
     parser.add_argument("--decay-lr", type=float, default=0.0)
     parser.add_argument("--weight-decay", type=float, default=-1.0)

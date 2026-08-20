@@ -673,7 +673,12 @@ class LayoutManager:
                 env.end_flag[env_idx] = True
                 unstable_envs.append(env_idx)
         if len(unstable_envs) > 0:
-            print(f"Unstable envs: {unstable_envs}")
+            details = {
+                env_idx: list(dict.fromkeys(unstable[env_idx]))
+                for env_idx in sorted(set(unstable_envs))
+                if unstable[env_idx]
+            }
+            print(f"Unstable envs: {sorted(set(unstable_envs))}; actors: {details}")
         return (num_fail != self.num_envs, unstable_envs)
 
     @staticmethod
