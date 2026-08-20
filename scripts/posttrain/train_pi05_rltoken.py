@@ -497,6 +497,9 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
         actor_source = "full resume" if full_resume else "BC resume" if bc_resume else "fresh"
         print(f"[RLToken init] actor_mode={actor_mode} actor_source={actor_source}")
 
+    from reserve_gpu_memory import release_gpu_reservation_from_environment
+
+    release_gpu_reservation_from_environment()
     encoder = RLTokenEncoderDecoder(state_dim, token_config).to(device)
     actor = RLTokenActor(
         token_config.token_dim,

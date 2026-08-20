@@ -105,6 +105,20 @@ def _install_initial_checkpoint(command) -> None:
     command.build_model = build_model
 
 
+def _install_gpu_reservation_release(command) -> None:
+    """Release launcher-held memory immediately before WCM model construction."""
+
+    from reserve_gpu_memory import release_gpu_reservation_from_environment
+
+    original_build_model = command.build_model
+
+    def build_model(config):
+        release_gpu_reservation_from_environment()
+        return original_build_model(config)
+
+    command.build_model = build_model
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=("train", "eval"))
@@ -140,6 +154,7 @@ def main() -> None:
 
         command.load_lerobot_dataset = load_dataset
         _install_initial_checkpoint(command)
+        _install_gpu_reservation_release(command)
         install_train_progress(command, train_epochs=_configured_epochs(parsed.args))
     else:
         import world_critic.evaluate as command

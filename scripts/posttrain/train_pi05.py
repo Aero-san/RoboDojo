@@ -22,36 +22,43 @@ import numpy as np
 
 @dataclasses.dataclass(frozen=True)
 class RecapTokenizePrompt:
-    """Tokenize conditioned and unconditional RECAP prompts for one sample."""
+    """Route one labeled RECAP sample to its CFG training prompt."""
 
     tokenizer: object
     discrete_state_input: bool = False
+    unconditional_prob: float = 0.1
 
     def __call__(self, data):
         prompt = data.get("prompt")
         if prompt is None:
             raise ValueError("RECAP requires a prompt with an advantage condition.")
         prompt = str(np.asarray(prompt).item())
-        unconditional = re.sub(
+        base_prompt = re.sub(
             r"\s*Advantage:\s*(positive|negative)\s*$",
             "",
             prompt,
             flags=re.IGNORECASE,
         )
-        if unconditional == prompt:
+        if base_prompt == prompt:
             raise ValueError(f"RECAP prompt has no binary advantage condition: {prompt!r}")
+        is_positive = bool(re.search(r"Advantage:\s*positive\s*$", prompt, flags=re.IGNORECASE))
+        # positive_only_conditional routing from RECAP: negative samples are
+        # always unconditional; positive samples are dropped to unconditional
+        # with the configured CFG regularization probability.
+        routed_prompt = (
+            prompt
+            if is_positive and np.random.random() >= self.unconditional_prob
+            else base_prompt
+        )
         state = data.get("state") if self.discrete_state_input else None
         if self.discrete_state_input and state is None:
             raise ValueError("Pi0.5 RECAP tokenization requires the normalized robot state.")
-        conditional_tokens, conditional_mask = self.tokenizer.tokenize(prompt, state)
-        unconditional_tokens, unconditional_mask = self.tokenizer.tokenize(unconditional, state)
+        tokens, mask = self.tokenizer.tokenize(routed_prompt, state)
         result = {key: value for key, value in data.items() if key != "prompt"}
         return {
             **result,
-            "tokenized_prompt": conditional_tokens,
-            "tokenized_prompt_mask": conditional_mask,
-            "unconditional_tokenized_prompt": unconditional_tokens,
-            "unconditional_tokenized_prompt_mask": unconditional_mask,
+            "tokenized_prompt": tokens,
+            "tokenized_prompt_mask": mask,
         }
 
 
@@ -61,6 +68,7 @@ class PosttrainDataConfig:
 
     base: object
     recap: bool = False
+    recap_unconditional_prob: float = 0.1
     delta_action_mask: tuple[bool, ...] | None = None
     norm_stats_dir: str = ""
 
@@ -83,6 +91,7 @@ class PosttrainDataConfig:
                         RecapTokenizePrompt(
                             transform.tokenizer,
                             transform.discrete_state_input,
+                            self.recap_unconditional_prob,
                         )
                     )
                     replaced = True
@@ -195,7 +204,8 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--init-checkpoint", default="")
     parser.add_argument("--recap", action="store_true")
-    parser.add_argument("--recap-beta", type=float, default=1.0)
+    parser.add_argument("--recap-unconditional-prob", type=float, default=0.1)
+    parser.add_argument("--recap-guidance-scale", type=float, default=1.0)
     parser.add_argument("--env-cfg-type", default="")
     parser.add_argument("--action-type", choices=("joint", "ee"), default="joint")
     parser.add_argument("--norm-stats-dir", default="")
@@ -241,7 +251,8 @@ def _write_checkpoint_model_metadata(
     finetune_mode: str,
     *,
     recap: bool,
-    recap_beta: float,
+    recap_unconditional_prob: float,
+    recap_guidance_scale: float,
 ) -> None:
     root = Path(checkpoint_dir).expanduser().resolve()
     candidates = [root]
@@ -257,7 +268,8 @@ def _write_checkpoint_model_metadata(
         "action_expert_variant": model.action_expert_variant,
         "recap_conditioning": bool(recap),
         "recap_inference_condition": "positive" if recap else None,
-        "recap_beta": recap_beta if recap else None,
+        "recap_unconditional_prob": recap_unconditional_prob if recap else None,
+        "recap_guidance_scale": recap_guidance_scale if recap else None,
     }
     for candidate in candidates:
         if (candidate / "params").exists():
@@ -268,8 +280,13 @@ def _write_checkpoint_model_metadata(
 
 
 def main(args: argparse.Namespace) -> None:
-    if not np.isfinite(args.recap_beta) or args.recap_beta < 0.0:
-        raise ValueError("--recap-beta must be finite and non-negative.")
+    if not 0.0 <= args.recap_unconditional_prob <= 1.0:
+        raise ValueError("--recap-unconditional-prob must be in [0, 1].")
+    if args.recap and args.recap_guidance_scale != 1.0:
+        raise ValueError(
+            "This OpenPI integration supports RECAP guidance scale 1.0. Other values "
+            "require two policy branches at every denoising step."
+        )
     openpi_root = Path(args.openpi_root).expanduser().resolve()
     train_module = _load_train_module(openpi_root)
     import openpi.training.config as config_lib
@@ -292,6 +309,7 @@ def main(args: argparse.Namespace) -> None:
         data = PosttrainDataConfig(
             data,
             recap=args.recap,
+            recap_unconditional_prob=args.recap_unconditional_prob,
             delta_action_mask=delta_action_mask,
             norm_stats_dir=args.norm_stats_dir,
         )
@@ -305,7 +323,6 @@ def main(args: argparse.Namespace) -> None:
         "fsdp_devices": args.fsdp_devices,
         "overwrite": not args.resume,
         "resume": args.resume,
-        "recap_beta": args.recap_beta if args.recap else None,
     }
     if args.init_checkpoint:
         if args.resume:
@@ -368,7 +385,8 @@ def main(args: argparse.Namespace) -> None:
         config.model,
         args.finetune_mode,
         recap=args.recap,
-        recap_beta=args.recap_beta,
+        recap_unconditional_prob=args.recap_unconditional_prob,
+        recap_guidance_scale=args.recap_guidance_scale,
     )
 
 

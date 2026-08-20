@@ -418,9 +418,12 @@ def _returns(
             values[index] = -1.0 + gamma * values[index + 1]
         raw[rows] = values
     minimum, maximum = float(raw.min()), float(raw.max())
-    normalized = np.zeros_like(raw)
+    normalized = np.full_like(raw, -0.5)
     if maximum - minimum >= 1e-8:
-        normalized[:] = -1.0 + 2.0 * (raw - minimum) / (maximum - minimum)
+        # RECAP trains its critic in normalized return space [-1, 0].  Keep
+        # this exact affine transform available to advantage annotation so
+        # the N-step reward term is normalized in the same coordinate system.
+        normalized[:] = (raw - minimum) / (maximum - minimum) - 1.0
     success_rows = np.asarray([success_by_episode[int(value)] for value in episode_ids], dtype=np.int8)
     return normalized, raw, success_rows
 

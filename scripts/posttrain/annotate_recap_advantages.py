@@ -70,6 +70,36 @@ def _merge_value_shards(
     return value_sum, value_count
 
 
+def _n_step_advantages(
+    raw_returns: np.ndarray,
+    values: np.ndarray,
+    *,
+    lookahead: int,
+    gamma: float,
+    return_raw_min: float,
+    return_raw_max: float,
+) -> np.ndarray:
+    """Compute RECAP advantages in the critic's normalized return space."""
+    advantages = np.empty_like(values, dtype=np.float32)
+    return_range = return_raw_max - return_raw_min
+    normalized_returns = (
+        (raw_returns - return_raw_min) / return_range - 1.0
+        if return_range >= 1e-8
+        else np.full_like(raw_returns, -0.5)
+    )
+    for index in range(len(raw_returns)):
+        future = min(index + lookahead, len(raw_returns) - 1)
+        steps = future - index
+        discount = gamma**steps
+        # Taking the difference after applying the critic's affine return
+        # transform preserves its offset when gamma < 1.  Normalizing the
+        # N-step reward difference as though it were a full return would put
+        # rewards and values in different coordinate systems.
+        reward_sum = float(normalized_returns[index] - discount * normalized_returns[future])
+        advantages[index] = reward_sum + discount * values[future] - values[index]
+    return advantages
+
+
 def main(args: argparse.Namespace) -> None:
     if args.lookahead < 1:
         raise ValueError("--lookahead must be positive.")
@@ -181,8 +211,7 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
 
     provenance = _provenance(root)
     records = []
-    all_advantages: dict[str, list[float]] = {}
-    rollout_advantages: dict[str, list[float]] = {}
+    all_advantages: list[float] = []
     for episode in progress_iter(
         episode_ids,
         desc="RECAP advantages",
@@ -191,31 +220,41 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
     ):
         rows = np.flatnonzero(dataset._row_episode == episode)
         frames = dataset._row_local_frame[rows].astype(np.int64)
-        returns = dataset._returns[rows].astype(np.float32)
+        raw_returns = dataset._raw_returns[rows].astype(np.float32)
         task = str(dataset._row_instruction[rows[0]])
+        missing_positions = [
+            index for index, frame in enumerate(frames)
+            if (episode, int(frame)) not in value_count
+        ]
+        # A WCM training window contains T value states plus one next-state
+        # target, so no window emits a value for the episode's terminal frame.
+        # Its return is known exactly from the success/failure label and is the
+        # correct boundary value in the same global min-max coordinate system.
+        allowed_missing = [len(frames) - 1]
+        if missing_positions not in ([], allowed_missing):
+            missing_values = [int(frames[index]) for index in missing_positions]
+            raise RuntimeError(
+                f"WCM inference did not produce values for episode={episode}, "
+                f"frames={missing_values[:10]}."
+            )
         values = np.asarray(
             [
                 value_sum[(episode, int(frame))] / value_count[(episode, int(frame))]
                 if (episode, int(frame)) in value_count
-                else float(returns[index])
+                else float(dataset._returns[rows[index]])
                 for index, frame in enumerate(frames)
             ],
             dtype=np.float32,
         )
-        advantages = np.empty_like(values)
-        for index in range(len(rows)):
-            future = min(index + args.lookahead, len(rows) - 1)
-            steps = future - index
-            discount = args.gamma**steps
-            # Both terms use the exact affine transform fitted to WCM's global
-            # min-max value targets.  Taking a difference of normalized full
-            # returns yields the correctly scaled discounted N-step reward,
-            # including the affine-offset correction when gamma < 1.
-            reward_sum = float(returns[index] - discount * returns[future])
-            advantages[index] = reward_sum + discount * values[future] - values[index]
-        all_advantages.setdefault(task, []).extend(map(float, advantages))
-        if provenance.get(episode) == "rollout":
-            rollout_advantages.setdefault(task, []).extend(map(float, advantages))
+        advantages = _n_step_advantages(
+            raw_returns,
+            values,
+            lookahead=args.lookahead,
+            gamma=args.gamma,
+            return_raw_min=dataset._return_raw_min,
+            return_raw_max=dataset._return_raw_max,
+        )
+        all_advantages.extend(map(float, advantages))
         records.append(
             {
                 "episode_index": episode,
@@ -226,17 +265,13 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
             }
         )
 
-    thresholds = {}
     percentile = 100.0 * (1.0 - args.positive_fraction)
-    for task, values in all_advantages.items():
-        threshold_values = rollout_advantages.get(task) or values
-        thresholds[task] = float(np.percentile(np.asarray(threshold_values), percentile))
+    threshold = float(np.percentile(np.asarray(all_advantages), percentile))
     positive_count = 0
     frame_count = 0
     for record in records:
-        threshold = thresholds[record["task"]]
-        positive = np.asarray(record["advantages"]) > threshold
-        if args.force_demonstrations_positive and record["source_kind"] == "demo":
+        positive = np.asarray(record["advantages"]) >= threshold
+        if record["source_kind"] == "demo":
             positive[:] = True
         record["positive"] = positive.tolist()
         record["threshold"] = threshold
@@ -252,8 +287,8 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
         "gamma": args.gamma,
         "failure_penalty": args.failure_penalty,
         "positive_fraction": args.positive_fraction,
-        "thresholds": thresholds,
-        "return_normalization": "global_minmax",
+        "threshold": threshold,
+        "return_normalization": "global_minmax_minus_one_zero",
         "return_raw_min": dataset._return_raw_min,
         "return_raw_max": dataset._return_raw_max,
         "wcm_checkpoint": str(Path(args.wcm_checkpoint).expanduser().resolve()),
@@ -275,11 +310,10 @@ if __name__ == "__main__":
     parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--task", default="")
-    parser.add_argument("--lookahead", type=int, default=50)
+    parser.add_argument("--lookahead", type=int, default=10)
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--failure-penalty", type=float, default=300.0)
-    parser.add_argument("--positive-fraction", type=float, default=0.4)
-    parser.add_argument("--force-demonstrations-positive", action="store_true")
+    parser.add_argument("--positive-fraction", type=float, default=0.3)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--device", default="cuda")

@@ -4,6 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+source "${SCRIPT_DIR}/gpu_reservation.sh"
+install_gpu_reservation_exit_trap
 PI_DIR="${ROOT_DIR}/XPolicyLab/policy/Pi_05"
 PI_PYTHON_BIN="${PYTHON_BIN:-${PI_DIR}/openpi/.venv/bin/python}"
 WCM_PYTHON_BIN="${WCM_PYTHON_BIN:-${ROOT_DIR}/external_dependencies/WCM/.venv/bin/python}"
@@ -101,6 +103,7 @@ CONVERT_ARGS+=(--episode-labels "${LABELS}")
 if [[ -n "${TASK_NAME}" ]]; then CONVERT_ARGS+=(--task "${TASK_NAME}"); fi
 echo "[Pi_05/WCM] preparing ${REPO_ID}"
 cd "${ROOT_DIR}"
+start_gpu_reservation "${GPU_ID}" "${WCM_PYTHON_BIN}" "WCM-selected Pi0.5 dataset conversion"
 "${PI_PYTHON_BIN}" "${SCRIPT_DIR}/prepare_pi05_dataset.py" "${CONVERT_ARGS[@]}"
 
 echo "[Pi_05/WCM] fine-tuning with OpenPI"
@@ -139,5 +142,6 @@ if [[ -n "${OPENPI_PALIGEMMA_VARIANT:-}" ]]; then TRAIN_ARGS+=(--paligemma-varia
 if [[ "${OPENPI_WANDB_ENABLED:-1}" == "0" ]]; then TRAIN_ARGS+=(--disable-wandb); fi
 if [[ "${OPENPI_RESUME:-0}" == "1" ]]; then TRAIN_ARGS+=(--resume); fi
 cd "${PI_DIR}/openpi"
+stop_gpu_reservation
 XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.9}" \
   "${PI_PYTHON_BIN}" "${SCRIPT_DIR}/train_pi05.py" "${TRAIN_ARGS[@]}"

@@ -4,6 +4,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+source "${SCRIPT_DIR}/gpu_reservation.sh"
+source "${SCRIPT_DIR}/posttrain_config.sh"
+install_gpu_reservation_exit_trap
+find_posttrain_config "$@"
+load_posttrain_config "${POSTTRAIN_CONFIG_FILE}"
 
 detect_gpu_ids() {
   local visible="${CUDA_VISIBLE_DEVICES:-}"
@@ -89,6 +94,7 @@ Required:
   --base-policy-checkpoint CKPT     Frozen Pi0.5 SFT checkpoint/path
 
 Options:
+  --config PATH                     Flat YAML hyperparameter config
   --demo-root PATH                  Successful SFT LeRobot-v2.1 dataset
   --initial-wcm-checkpoint PATH     Warm-start WCM weights and action statistics
   --initial-actor-checkpoint PATH   Full actor/encoder training resume
@@ -105,12 +111,13 @@ Options:
   --rollout-envs-per-worker N       Vectorized Isaac envs in each worker
 
 Additional controls are documented in
-configs/posttrain/pi05_rltoken_recap.env.example.
+configs/posttrain/pi05_rltoken_recap.yaml.example.
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --config) shift 2 ;;
     --task) TASK_NAME="$2"; shift 2 ;;
     --base-policy-checkpoint) BASE_POLICY_CHECKPOINT="$2"; shift 2 ;;
     --demo-root) DEMO_ROOT="$2"; shift 2 ;;
@@ -233,6 +240,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   mkdir -p "${ITER_DIR}"
 
   echo "[RLToken RECAP ${iteration}/${ITERATIONS}] building SFT + rollout replay buffer"
+  start_gpu_reservation "${WCM_TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "RLToken replay-buffer and WCM dataset preparation"
   BUFFER_ARGS=(
     --demo-root "${DEMO_ROOT}"
     --output "${BUFFER_ROOT}"
@@ -264,6 +272,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   )
   if [[ -n "${PREVIOUS_WCM}" ]]; then WCM_ENV+=(WCM_INIT_CHECKPOINT="${PREVIOUS_WCM}"); fi
   env "${WCM_ENV[@]}" bash "${SCRIPT_DIR}/run_wcm.sh" --task "${TASK_NAME}"
+  stop_gpu_reservation
   PREVIOUS_WCM="${WCM_OUTPUT}/deploy.pt"
   [[ -f "${PREVIOUS_WCM}" ]] || { echo "WCM deploy checkpoint missing: ${PREVIOUS_WCM}" >&2; exit 1; }
 

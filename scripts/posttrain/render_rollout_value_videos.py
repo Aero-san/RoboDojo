@@ -62,13 +62,10 @@ def _selected_episodes(root: Path, max_episodes: int) -> list[tuple[Path, dict[s
     if not entries:
         raise FileNotFoundError(f"No completed rollout manifests below {root / 'episodes'}")
     selected = entries[:max_episodes]
-    episode_ids = [int(manifest["episode_index"]) for _, manifest in selected]
-    if len(set(episode_ids)) != len(episode_ids):
-        raise ValueError(
-            "Selected rollout manifests contain duplicate episode_index values. "
-            "Value-video rendering currently requires one sequential RoboDojo rollout worker."
-        )
-    return selected
+    return [
+        (episode_dir, {**manifest, "_render_episode_id": render_episode_id})
+        for render_episode_id, (episode_dir, manifest) in enumerate(selected)
+    ]
 
 
 def _autocast(device: torch.device, precision: str):
@@ -117,7 +114,8 @@ def _score_episode(
     batch_size: int,
     backend: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    episode_id = int(manifest["episode_index"])
+    source_episode_id = int(manifest["episode_index"])
+    episode_id = int(manifest.get("_render_episode_id", source_episode_id))
     length = int(manifest["length"])
     history_size = int(config.data.history_size)
     window_size = history_size + int(config.data.prediction_horizon)
@@ -230,6 +228,7 @@ def _score_episode(
         "success": bool(manifest["success"]),
         "score": float(manifest["score"]),
         "source": str(episode_dir),
+        "source_episode_id": source_episode_id,
     }
     video_map = {
         "path": str((episode_dir / "cam_high.mp4").resolve()),

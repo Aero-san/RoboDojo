@@ -118,7 +118,7 @@ worker count are per process. Actor rollout collection samples its configured
 Gaussian by default; set `RLTOKEN_ROLLOUT_DETERMINISTIC=1` to collect means
 only. Normal XPolicyLab evaluation remains deterministic unless
 `POSTTRAIN_DETERMINISTIC=0` is explicitly exported. See
-[pi05_rltoken_recap.env.example](../configs/posttrain/pi05_rltoken_recap.env.example)
+[pi05_rltoken_recap.yaml.example](../configs/posttrain/pi05_rltoken_recap.yaml.example)
 for all common controls.
 
 Rollout cards are paired in list order. With
@@ -156,13 +156,12 @@ bash scripts/robodojo.sh eval \
 
 ## Off-policy WCM + RECAP
 
-`run_pi05_recap.sh` is the end-to-end learning-from-experience path. For each
-iteration it aggregates the successful SFT demonstrations with rollouts from
-earlier iterations, updates WCM on the simulator outcome returns, computes
-the paper's N-step advantage indicator, trains Pi0.5 with conditional flow
-matching, and then records stable episodes from that updated policy (including
-failures) for the next iteration. Iteration 1 therefore contains SFT data only.
-The complete replay buffer is resampled every iteration.
+`run_pi05_recap.sh` is the end-to-end learning-from-experience path. Each
+iteration first collects successes and failures with the current policy, then
+aggregates all rollout rounds with the successful SFT demonstrations, updates
+WCM, computes N-step advantage labels, and trains Pi0.5 with CFG routing. Thus
+iteration 1 already uses rollout failures and the final collected round is
+consumed by a policy update. The complete replay buffer is rebuilt each round.
 This implements the advantage-conditioned objective from
 [RECAP / $\pi^*_{0.6}$](https://arxiv.org/abs/2511.14759) using Pi0.5's native
 continuous-action flow-matching loss.
@@ -174,6 +173,17 @@ INITIAL_POLICY_CHECKPOINT=$PWD/XPolicyLab/policy/Pi_05/checkpoints/my_sft/59999 
 RECAP_ITERATIONS=3 RECAP_ROLLOUT_EPISODES=50 \
 bash scripts/posttrain/run_pi05_recap.sh
 ```
+
+To continue an interrupted run, repeat the same command with `--resume` (or
+set `RECAP_RESUME=1`). The launcher validates replay-buffer metadata, WCM and
+Pi0.5 checkpoints, advantage labels, normalization assets, rollout manifests,
+and value-video outputs in order. Complete stages are reused. Incomplete
+non-rollout artifacts are moved to a timestamped `.incomplete-*` sibling
+before rebuilding. WCM `last.pt` and OpenPI optimizer checkpoints resume
+inside their respective training stages when available. Completed rollout
+episodes are preserved and only the remaining episode count is collected.
+This also allows a run interrupted at iteration 1 rollout to restart directly
+from that rollout.
 
 After each iteration, the launcher scores the first three newly collected
 rollouts by default (or all of them when fewer than three were requested) and
@@ -194,13 +204,17 @@ only the first 20 demonstrations after filtering to the requested task and
 sorting by original `episode_index`. The same fixed subset is included in
 every replay-buffer iteration; `0` (the default) keeps all demonstrations.
 
-The default RECAP settings use 50-step value lookahead, a per-task threshold
-selecting roughly 40% positive rollout advantages, `gamma=1`, and `beta=1`.
-Pi0.5 is updated with the explicit objective
-`L_unconditional + beta * L_conditioned`; no prompt dropout approximation is
-used. Return labels use `C_fail=300` and one global min-max transform to
-`[-1,1]`, and the N-step reward term uses that same transform. Set
-`RECAP_GAMMA`, `RECAP_BETA`, and `WCM_FAILURE_PENALTY` to override them.
+The default RECAP settings use 10-step value lookahead, one global threshold
+selecting the top 30% of advantages, `gamma=1`, and 10% positive-sample CFG
+dropout. Demonstrations are always positive; rollout labels use the inclusive
+global threshold. Negative samples always use the base prompt, while positive
+samples use `Advantage: positive` unless dropped to the base prompt. Return
+labels and N-step rewards share the global `[-1,0]` normalization used by the
+critic. Set `RECAP_LOOKAHEAD`, `RECAP_POSITIVE_FRACTION`,
+`RECAP_UNCONDITIONAL_PROB`, `RECAP_GAMMA`, and `WCM_FAILURE_PENALTY` to tune
+these values. The current JAX integration intentionally accepts only
+`RECAP_GUIDANCE_SCALE=1.0`, where guided inference reduces to the positive
+conditional branch.
 Every iteration starts from the preceding policy checkpoint. WCM can be warm
 started with `INITIAL_WCM_CHECKPOINT`; model weights and action-normalization
 statistics are reused while the optimizer and episode split are rebuilt after
@@ -213,8 +227,11 @@ and dual-arm RoboDojo configurations. Fine-tuning still supports `full`,
 `action_expert`, `action_expert_lora`, `paligemma_lora`, and `all_lora` via
 `PI05_FINETUNE_MODE`.
 
-See [pi05_recap.env.example](../configs/posttrain/pi05_recap.env.example) for
-all common controls. Set `WCM_TRAIN_GPUS=0,1,2,3` to launch one official WCM
+Pass `--config configs/posttrain/pi05_recap.yaml.example` to load a flat YAML
+configuration. Command-line flags override environment variables, which
+override YAML, which overrides launcher defaults. See
+[pi05_recap.yaml.example](../configs/posttrain/pi05_recap.yaml.example) for all
+common controls. Set `WCM_TRAIN_GPUS=0,1,2,3` to launch one official WCM
 DDP process per listed GPU; its world size is derived from the list, so there
 is no separate process-count setting. Advantage-label inference uses the same
 GPU list and shards windows without padding; both WCM batch-size settings are
@@ -223,6 +240,14 @@ to OpenPI. `OPENPI_FSDP_DEVICES` controls the FSDP axis and must divide the
 number of training GPUs; the remaining mesh axis is data parallel. For
 example, 8 training GPUs with `OPENPI_FSDP_DEVICES=2` use 4-way data parallel
 and 2-way FSDP, so all 8 GPUs participate.
+
+WCM, RECAP, RL Token RECAP, and WCM-selected Pi0.5 launchers reserve their
+training GPUs during long CPU-only dataset construction phases. The holder is
+released at the model-allocation boundary, including inside the official WCM
+and RL Token trainers, and is also cleaned up on errors or interrupts. It
+leaves 2048 MiB per GPU available for CUDA/NCCL initialization by default.
+Set `GPU_RESERVATION_FREE_MIB` to change that margin or
+`GPU_RESERVATION_ENABLED=0` to disable reservation.
 
 A rollout episode itself is a sequential simulator-policy interaction and is
 not split across GPUs. `POLICY_GPU` and `ENV_GPU` do place the XPolicyLab
