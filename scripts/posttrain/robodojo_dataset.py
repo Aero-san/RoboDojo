@@ -389,6 +389,7 @@ def _returns(
     labels: dict[int, bool],
     failure_penalty: float,
     gamma: float = 1.0,
+    normalization_bounds: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     success_by_episode: dict[int, bool] = {}
     for episode, values in rewards.items():
@@ -417,7 +418,12 @@ def _returns(
         for index in range(len(rows) - 2, -1, -1):
             values[index] = -1.0 + gamma * values[index + 1]
         raw[rows] = values
-    minimum, maximum = float(raw.min()), float(raw.max())
+    minimum, maximum = normalization_bounds or (float(raw.min()), float(raw.max()))
+    if float(raw.min()) < minimum - 1e-5 or float(raw.max()) > maximum + 1e-5:
+        raise ValueError(
+            f"Return values [{float(raw.min())}, {float(raw.max())}] exceed the supplied "
+            f"global normalization bounds [{minimum}, {maximum}]."
+        )
     normalized = np.full_like(raw, -0.5)
     if maximum - minimum >= 1e-8:
         # RECAP trains its critic in normalized return space [-1, 0].  Keep
@@ -426,6 +432,33 @@ def _returns(
         normalized[:] = (raw - minimum) / (maximum - minimum) - 1.0
     success_rows = np.asarray([success_by_episode[int(value)] for value in episode_ids], dtype=np.int8)
     return normalized, raw, success_rows
+
+
+def _return_reference_bounds(
+    dataset_root: Path,
+    failure_penalty: float,
+    gamma: float,
+) -> tuple[float, float] | None:
+    summary_path = dataset_root / "meta/replay_buffer.json"
+    if not summary_path.is_file():
+        return None
+    summary = _load_json(summary_path)
+    if summary.get("type") != "wcm_update_subset" or not summary.get("source_buffer"):
+        return None
+    reference_root = Path(summary["source_buffer"]).expanduser().resolve()
+    episodes = _load_jsonl(reference_root / "meta/episodes.jsonl")
+    labels = _success_labels(str(reference_root / "meta/success_labels.json"))
+    if not episodes:
+        raise ValueError(f"Return-reference replay buffer has no episodes: {reference_root}")
+    episode_ids = np.concatenate(
+        [np.full(int(row["length"]), int(row["episode_index"]), dtype=np.int64) for row in episodes]
+    )
+    rewards = {
+        int(row["episode_index"]): np.zeros(int(row["length"]), dtype=np.float32)
+        for row in episodes
+    }
+    _, raw, _ = _returns(episode_ids, rewards, labels, failure_penalty, gamma)
+    return float(raw.min()), float(raw.max())
 
 
 class RoboDojoDataset:
@@ -580,19 +613,25 @@ class RoboDojoDataset:
         failure_penalty_raw = os.environ.get("WCM_FAILURE_PENALTY", "")
         failure_penalty = float(failure_penalty_raw) if failure_penalty_raw else 300.0
         gamma = float(os.environ.get("WCM_GAMMA", "1.0"))
+        normalization_bounds = _return_reference_bounds(self.root, failure_penalty, gamma)
         returns, raw_returns, success_rows = _returns(
             self._row_episode,
             rewards,
             labels,
             failure_penalty,
             gamma,
+            normalization_bounds,
         )
         self._returns = returns
         self._raw_returns = raw_returns
         self._success_rows = success_rows
         self._return_normalization = "global_minmax"
-        self._return_raw_min = float(raw_returns.min())
-        self._return_raw_max = float(raw_returns.max())
+        self._return_raw_min = (
+            normalization_bounds[0] if normalization_bounds is not None else float(raw_returns.min())
+        )
+        self._return_raw_max = (
+            normalization_bounds[1] if normalization_bounds is not None else float(raw_returns.max())
+        )
         self._return_gamma = gamma
         self._failure_penalty = failure_penalty
         self._columns = {

@@ -24,6 +24,8 @@ def _check_buffer(path: Path) -> bool:
     )
     if not all((path / item).is_file() for item in required):
         return False
+    if (path / "meta/.incremental_update_in_progress").exists():
+        return False
     info = _json(path / "meta/info.json")
     episodes = [line for line in (path / "meta/episodes.jsonl").read_text().splitlines() if line.strip()]
     return int(info.get("total_episodes", -1)) == len(episodes) > 0
@@ -36,12 +38,16 @@ def _check_advantages(path: Path) -> bool:
     return len(rows) > 1 and rows[0].get("type") == "recap_advantages"
 
 
-def _check_pi_dataset(path: Path) -> bool:
-    return (
+def _check_pi_dataset(path: Path, expected: int) -> bool:
+    complete = (
         (path / "meta/info.json").is_file()
         and (path / "meta/stats.json").is_file()
         and (path / "data").is_dir()
+        and not (path / "meta/.recap_update_in_progress").exists()
     )
+    if not complete:
+        return False
+    return expected <= 0 or int(_json(path / "meta/info.json").get("total_episodes", -1)) == expected
 
 
 def _check_policy(path: Path) -> bool:
@@ -91,9 +97,12 @@ def check(stage: str, path: Path, expected: int) -> bool:
     if stage == "advantages":
         return _check_advantages(path)
     if stage == "pi_dataset":
-        return _check_pi_dataset(path)
+        return _check_pi_dataset(path, expected)
     if stage == "norm":
-        return (path / "norm_stats.json").is_file()
+        return (
+            (path / "norm_stats.json").is_file()
+            and not (path / ".incremental_update_in_progress").exists()
+        )
     if stage == "policy":
         return _check_policy(path)
     if stage == "policy_resume":

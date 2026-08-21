@@ -88,6 +88,34 @@ def get_monitor():
     return None
 
 
+def _patch_isaac_property_window_race():
+    """Guard Isaac Sim 4.5's late property-window selection callback.
+
+    In headless/offscreen mode the USD stage can change after the property
+    window's ScrollingFrame has been destroyed. Isaac Sim 4.5 still calls
+    ``save_scroll_pos`` from the selection callback and dereferences the
+    missing frame. The property panel is GUI-only and is not part of the
+    evaluation, so ignoring this late callback is safe.
+    """
+    try:
+        from omni.kit.window.property.window import PropertyWindow
+    except Exception:
+        return
+
+    if getattr(PropertyWindow.save_scroll_pos, "_robodojo_guarded", False):
+        return
+
+    original_save_scroll_pos = PropertyWindow.save_scroll_pos
+
+    def save_scroll_pos_guarded(self, reset=False):
+        if not reset and self.properties_frame is None:
+            return
+        return original_save_scroll_pos(self, reset=reset)
+
+    save_scroll_pos_guarded._robodojo_guarded = True
+    PropertyWindow.save_scroll_pos = save_scroll_pos_guarded
+
+
 def _physx_monitor_needed(task_name) -> bool:
     """Enable the PhysX log monitor only for tasks whose Config declares a
     non-empty `Articulation` section (those bodies trigger the PhysX
@@ -129,6 +157,7 @@ if enable_monitor:
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
+_patch_isaac_property_window_race()
 
 from omegaconf import OmegaConf
 
@@ -285,6 +314,10 @@ def main():
         shard_index, shard_count = 0, 1
     eval_cfg["layout_shard_index"] = shard_index
     eval_cfg["layout_shard_count"] = shard_count
+    layout_offset = int(os.environ.get("ROBODOJO_LAYOUT_OFFSET", "0"))
+    if layout_offset < 0:
+        raise ValueError("ROBODOJO_LAYOUT_OFFSET must be non-negative.")
+    eval_cfg["layout_offset"] = layout_offset
     eval_cfg["physx_monitor_enabled"] = enable_monitor
     eval_cfg["save_video"] = os.environ.get("ROBODOJO_SAVE_VIDEO", "1").lower() not in {"0", "false", "no", "off"}
 

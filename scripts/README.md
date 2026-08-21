@@ -19,7 +19,11 @@
 | [posttrain/run_pi05_recap.sh](posttrain/run_pi05_recap.sh) | Iterated simulator rollout + WCM + RECAP Pi0.5 training |
 | [posttrain/render_rollout_value_videos.py](posttrain/render_rollout_value_videos.py) | Score rollout frames with WCM and render official value overlays |
 | [posttrain/build_replay_buffer.py](posttrain/build_replay_buffer.py) | Aggregate SFT demonstrations and labelled policy rollouts |
+| [posttrain/build_replay_buffer_incremental.py](posttrain/build_replay_buffer_incremental.py) | Reuse a preceding RECAP buffer and append one rollout round |
+| [posttrain/build_wcm_training_subset.py](posttrain/build_wcm_training_subset.py) | Sample old replay episodes and combine them with every newly appended episode for one WCM update |
 | [posttrain/annotate_recap_advantages.py](posttrain/annotate_recap_advantages.py) | Compute WCM N-step advantages and RECAP conditions |
+| [posttrain/prepare_pi05_recap_dataset.py](posttrain/prepare_pi05_recap_dataset.py) | Incrementally append RECAP rollouts and refresh Pi0.5 conditions |
+| [posttrain/compute_pi05_norm_stats_incremental.py](posttrain/compute_pi05_norm_stats_incremental.py) | Continue Pi0.5 normalization from a serialized running accumulator |
 
 ## Pi0.5 post-training options
 
@@ -156,15 +160,50 @@ bash scripts/robodojo.sh eval \
 
 ## Off-policy WCM + RECAP
 
-`run_pi05_recap.sh` is the end-to-end learning-from-experience path. Each
-iteration first collects successes and failures with the current policy, then
-aggregates all rollout rounds with the successful SFT demonstrations, updates
-WCM, computes N-step advantage labels, and trains Pi0.5 with CFG routing. Thus
-iteration 1 already uses rollout failures and the final collected round is
-consumed by a policy update. The complete replay buffer is rebuilt each round.
+`run_pi05_recap.sh` is the end-to-end learning-from-experience path. Iteration
+1 contains no rollout: it initializes WCM and Pi0.5 from up to
+`RECAP_MAX_DEMO_EPISODES` successful SFT demonstrations (100 by default).
+Starting at iteration 2, the preceding policy collects successes and failures,
+the complete new round is appended to the replay buffer, WCM and Pi0.5 are
+updated, and the final iteration's collected round is consumed as well. Each
+round exposes the complete replay buffer, but materializes it incrementally by
+copying the small parquet/metadata prefix, hard-linking existing videos, and
+appending only the newest rollout round. RLToken RECAP uses the same
+incremental buffer path and already follows train-then-rollout ordering.
 This implements the advantage-conditioned objective from
 [RECAP / $\pi^*_{0.6}$](https://arxiv.org/abs/2511.14759) using Pi0.5's native
 continuous-action flow-matching loss.
+
+Pi0.5 dataset conversion is incremental. The first iteration performs the
+one-time LeRobot-v3 materialization. Each later iteration copies only the
+small parquet/metadata tree, hard-links the preceding packed videos, decodes
+and encodes only newly appended rollout episodes, and then rewrites the
+lightweight `task_index`/task metadata for all frames using the latest global
+advantage threshold. If a run is resumed after advantage annotation, an
+already materialized dataset with the same episode prefix is updated in place,
+so no videos are processed again. The source prefix and episode lengths are
+validated before reuse; a provenance manifest is retained under
+`meta/recap_incremental.json`.
+
+Pi0.5 normalization is incremental when `OPENPI_NORM_MAX_FRAMES=0` (the
+default). Alongside `norm_stats.json`, each iteration stores count, first and
+second moments, min/max, and OpenPI's 5000-bin quantile histograms. The next
+iteration processes only newly appended frames and continues those exact
+running statistics. A legacy normalization directory without an accumulator
+triggers one final full scan, after which later rounds are incremental. A
+nonzero `OPENPI_NORM_MAX_FRAMES` intentionally keeps full randomized sampling
+each round because that sample is not a stable dataset prefix.
+
+WCM update cost is bounded after iteration 1. Its per-iteration dataset is all
+new rollout episodes plus a deterministic sample of at most
+`RECAP_WCM_REPLAY_EPISODES` old episodes (20 by default). The sampled dataset
+is stored under `iteration_XX/wcm_training_buffer`; the complete
+`replay_buffer` remains unchanged. Advantage inference must still rescore every
+state because WCM parameters change each round. Return targets in the sampled
+WCM dataset retain the complete replay buffer's global min-max coordinates, so
+critic values remain comparable with full-buffer advantage inference. Pi0.5
+and RLToken actor updates likewise train from the complete replay distribution,
+although they warm-start from the prior policy/actor.
 
 ```bash
 TASK_NAME=stack_bowls \
@@ -182,11 +221,11 @@ non-rollout artifacts are moved to a timestamped `.incomplete-*` sibling
 before rebuilding. WCM `last.pt` and OpenPI optimizer checkpoints resume
 inside their respective training stages when available. Completed rollout
 episodes are preserved and only the remaining episode count is collected.
-This also allows a run interrupted at iteration 1 rollout to restart directly
-from that rollout.
+Iteration 1 has no rollout; later interrupted rollout rounds preserve completed
+episodes and continue from the next layout.
 
-After each iteration, the launcher scores the first three newly collected
-rollouts by default (or all of them when fewer than three were requested) and
+After each rollout-bearing iteration, the launcher scores the first three newly
+collected rollouts by default (or all of them when fewer than three were requested) and
 writes head-view monitoring videos to
 `iteration_XX/value_videos/videos/`. The translucent lower-half chart is the
 official WCM `episode_value_video` renderer. WCM inference still consumes all
@@ -202,7 +241,8 @@ beside the videos.
 Set `RECAP_MAX_DEMO_EPISODES=20`, or pass `--max-demo-episodes 20`, to use
 only the first 20 demonstrations after filtering to the requested task and
 sorting by original `episode_index`. The same fixed subset is included in
-every replay-buffer iteration; `0` (the default) keeps all demonstrations.
+every replay-buffer iteration. The default is 100; setting it to `0`
+explicitly keeps all available demonstrations.
 
 The default RECAP settings use 10-step value lookahead, one global threshold
 selecting the top 30% of advantages, `gamma=1`, and 10% positive-sample CFG

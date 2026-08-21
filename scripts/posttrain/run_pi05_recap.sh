@@ -51,7 +51,8 @@ INITIAL_WCM_CHECKPOINT="${INITIAL_WCM_CHECKPOINT:-}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${ROOT_DIR}/outputs/recap}"
 ITERATIONS="${RECAP_ITERATIONS:-3}"
 ROLLOUT_EPISODES="${RECAP_ROLLOUT_EPISODES:-50}"
-MAX_DEMO_EPISODES="${RECAP_MAX_DEMO_EPISODES:-0}"
+MAX_DEMO_EPISODES="${RECAP_MAX_DEMO_EPISODES:-100}"
+WCM_REPLAY_EPISODES="${RECAP_WCM_REPLAY_EPISODES:-20}"
 VALUE_VIDEO_EPISODES="${RECAP_VALUE_VIDEO_EPISODES:-}"
 VALUE_VIDEO_GPU="${RECAP_VALUE_VIDEO_GPU:-}"
 ENV_CFG_TYPE="${ENV_CFG_TYPE:-arx_x5}"
@@ -61,6 +62,7 @@ WCM_TRAIN_GPUS="${WCM_TRAIN_GPUS:-}"
 POLICY_GPU="${POLICY_GPU:-}"
 ENV_GPU="${ENV_GPU:-}"
 SEED="${SEED:-0}"
+ROLLOUT_LAYOUT_SEED="${RECAP_ROLLOUT_LAYOUT_SEED:-0}"
 TRAIN_CONFIG="${OPENPI_TRAIN_CONFIG_NAME:-pi05_base_aloha_full_sim_arx-x5_seed_0}"
 FINETUNE_MODE="${PI05_FINETUNE_MODE:-action_expert_lora}"
 GAMMA="${RECAP_GAMMA:-1.0}"
@@ -86,6 +88,7 @@ Options:
   --iterations N                      Policy-improvement iterations (default: 3)
   --rollout-episodes N                Simulator episodes per iteration (default: 50)
   --max-demo-episodes N               Use first N task demonstrations (0: all)
+  --wcm-replay-episodes K             Old episodes sampled for each later WCM update
   --value-video-episodes N            Render N WCM-value rollout videos per iteration (0: disable)
   --env-cfg NAME                      RoboDojo robot/environment config
   --action-type joint|ee              Policy action representation
@@ -113,6 +116,7 @@ while [[ $# -gt 0 ]]; do
     --iterations) ITERATIONS="$2"; shift 2 ;;
     --rollout-episodes) ROLLOUT_EPISODES="$2"; shift 2 ;;
     --max-demo-episodes) MAX_DEMO_EPISODES="$2"; shift 2 ;;
+    --wcm-replay-episodes) WCM_REPLAY_EPISODES="$2"; shift 2 ;;
     --value-video-episodes) VALUE_VIDEO_EPISODES="$2"; shift 2 ;;
     --env-cfg) ENV_CFG_TYPE="$2"; shift 2 ;;
     --action-type) ACTION_TYPE="$2"; shift 2 ;;
@@ -145,8 +149,10 @@ fi
 [[ "${ROLLOUT_EPISODES}" =~ ^[1-9][0-9]*$ ]] || { echo "--rollout-episodes must be positive" >&2; exit 2; }
 [[ "${NUM_TRAIN_STEPS}" =~ ^[1-9][0-9]*$ ]] || { echo "--num-train-steps must be positive" >&2; exit 2; }
 [[ "${RESUME_RUN}" == "0" || "${RESUME_RUN}" == "1" ]] || { echo "RECAP_RESUME must be 0 or 1" >&2; exit 2; }
+[[ "${ROLLOUT_LAYOUT_SEED}" =~ ^[0-9]+$ ]] || { echo "RECAP_ROLLOUT_LAYOUT_SEED must be non-negative" >&2; exit 2; }
 VALUE_VIDEO_EPISODES="${VALUE_VIDEO_EPISODES:-$((ROLLOUT_EPISODES < 3 ? ROLLOUT_EPISODES : 3))}"
 [[ "${MAX_DEMO_EPISODES}" =~ ^[0-9]+$ ]] || { echo "--max-demo-episodes must be non-negative" >&2; exit 2; }
+[[ "${WCM_REPLAY_EPISODES}" =~ ^[0-9]+$ ]] || { echo "--wcm-replay-episodes must be non-negative" >&2; exit 2; }
 [[ "${VALUE_VIDEO_EPISODES}" =~ ^[0-9]+$ ]] || { echo "--value-video-episodes must be non-negative" >&2; exit 2; }
 (( VALUE_VIDEO_EPISODES <= ROLLOUT_EPISODES )) || {
   echo "--value-video-episodes cannot exceed --rollout-episodes" >&2
@@ -252,11 +258,15 @@ reuse_stage() {
 CURRENT_POLICY="${INITIAL_POLICY_CHECKPOINT}"
 PREVIOUS_WCM="${INITIAL_WCM_CHECKPOINT}"
 ROLLOUT_ROOTS=()
+PREVIOUS_PI_DATASET=""
+PREVIOUS_BUFFER=""
+PREVIOUS_NORM_STATS=""
 
 for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   ITER_DIR=$(printf '%s/iteration_%02d' "${RUN_ROOT}" "${iteration}")
   RAW_ROLLOUTS="${ITER_DIR}/rollouts"
   BUFFER_ROOT="${ITER_DIR}/replay_buffer"
+  WCM_BUFFER="${ITER_DIR}/wcm_training_buffer"
   WCM_OUTPUT="${ITER_DIR}/wcm"
   ADVANTAGES="${ITER_DIR}/recap_advantages.jsonl"
   REPO_ID="RoboDojo-recap-${TASK_SLUG}-iter-${iteration}"
@@ -266,11 +276,12 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   REBUILD_DOWNSTREAM=0
   mkdir -p "${ITER_DIR}"
 
-  # RECAP is offline with respect to each policy update: collect with the
-  # current policy first, then use those trajectories in this iteration's
-  # critic and CFG update.  Collecting after training drops the final round
-  # from optimization and leaves iteration 1 with demonstrations only.
-  if [[ "${RESUME_RUN}" == "1" ]] && artifact_complete rollout "${RAW_ROLLOUTS}" "${ROLLOUT_EPISODES}"; then
+  # Iteration 1 is the successful-demonstration initialization. Starting at
+  # iteration 2, collect with the preceding policy and consume that entire new
+  # rollout round in the current WCM/policy update.
+  if (( iteration == 1 )); then
+    echo "[RECAP 1/${ITERATIONS}] WCM initialization uses ${MAX_DEMO_EPISODES:-all} SFT demonstrations and no rollout"
+  elif [[ "${RESUME_RUN}" == "1" ]] && artifact_complete rollout "${RAW_ROLLOUTS}" "${ROLLOUT_EPISODES}"; then
     reuse_stage rollout
   else
     mkdir -p "${RAW_ROLLOUTS}/episodes"
@@ -279,6 +290,9 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     fi
     recorded_episodes=$(find "${RAW_ROLLOUTS}/episodes" -mindepth 2 -maxdepth 2 -name manifest.json -type f | wc -l)
     recorded_episodes="${recorded_episodes//[[:space:]]/}"
+    layout_offset=$("${WCM_PYTHON_BIN}" -c \
+      'import json,sys; from pathlib import Path; ids=[int(json.loads(p.read_text())["layout_id"]) for p in Path(sys.argv[1]).glob("*/manifest.json")]; print(max(ids, default=-1) + 1)' \
+      "${RAW_ROLLOUTS}/episodes")
     (( recorded_episodes <= ROLLOUT_EPISODES )) || {
       echo "Rollout directory has ${recorded_episodes} episodes, expected at most ${ROLLOUT_EPISODES}: ${RAW_ROLLOUTS}" >&2
       exit 1
@@ -291,6 +305,8 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       else
         ROLLOUT_LOG="${RAW_ROLLOUTS}/rollout.log"
       fi
+      # RoboDojo's eval seed selects Assets/Eval_Layout/.../<seed>. It is not
+      # an unconstrained RNG seed and must not track the training iteration.
       (
         ROBODOJO_DISABLE_PROGRESS=1 \
           bash "${ROOT_DIR}/scripts/robodojo.sh" eval \
@@ -299,12 +315,13 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
             --ckpt "${CURRENT_POLICY}" \
             --env-cfg "${ENV_CFG_TYPE}" \
             --action-type "${ACTION_TYPE}" \
-            --seed "$((SEED + iteration - 1 + recorded_episodes))" \
+            --seed "${ROLLOUT_LAYOUT_SEED}" \
             --policy-gpu "${POLICY_GPU}" \
             --env-gpu "${ENV_GPU}" \
             --policy-env "${POLICY_ENV}" \
             --eval-env "${EVAL_ENV}" \
             --eval-num "${remaining_episodes}" \
+            --layout-offset "${layout_offset}" \
             --rollout-dir "${RAW_ROLLOUTS}" \
             --no-video
       ) >"${ROLLOUT_LOG}" 2>&1 &
@@ -333,7 +350,16 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     }
     REBUILD_DOWNSTREAM=1
   fi
-  ROLLOUT_ROOTS+=("${RAW_ROLLOUTS}")
+  if (( iteration > 1 )); then
+    ROLLOUT_ROOTS+=("${RAW_ROLLOUTS}")
+  fi
+
+  OLD_BUFFER_EPISODES=0
+  if [[ -n "${PREVIOUS_BUFFER}" ]]; then
+    OLD_BUFFER_EPISODES=$("${WCM_PYTHON_BIN}" -c \
+      'import json,sys; print(json.load(open(sys.argv[1]))["total_episodes"])' \
+      "${PREVIOUS_BUFFER}/meta/info.json")
+  fi
 
   if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && artifact_complete buffer "${BUFFER_ROOT}"; then
     reuse_stage replay_buffer
@@ -341,15 +367,44 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     archive_incomplete "${BUFFER_ROOT}"
     echo "[RECAP ${iteration}/${ITERATIONS}] aggregating SFT plus ${#ROLLOUT_ROOTS[@]} completed rollout rounds"
     start_gpu_reservation "${WCM_TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "RECAP replay-buffer and WCM dataset preparation"
-    BUFFER_ARGS=(
-      --demo-root "${DEMO_ROOT}"
-      --output "${BUFFER_ROOT}"
-      --task "${TASK_NAME}"
-      --max-demo-episodes "${MAX_DEMO_EPISODES}"
+    if [[ -n "${PREVIOUS_BUFFER}" ]]; then
+      "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/build_replay_buffer_incremental.py" \
+        --previous-buffer "${PREVIOUS_BUFFER}" \
+        --rollout-root "${RAW_ROLLOUTS}" \
+        --output "${BUFFER_ROOT}" \
+        --task "${TASK_NAME}" \
+        --seed "$((SEED + iteration))"
+    else
+      BUFFER_ARGS=(
+        --demo-root "${DEMO_ROOT}"
+        --output "${BUFFER_ROOT}"
+        --task "${TASK_NAME}"
+        --max-demo-episodes "${MAX_DEMO_EPISODES}"
+        --seed "$((SEED + iteration))"
+      )
+      for source in "${ROLLOUT_ROOTS[@]}"; do BUFFER_ARGS+=(--rollout-root "${source}"); done
+      "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/build_replay_buffer.py" "${BUFFER_ARGS[@]}"
+    fi
+    REBUILD_DOWNSTREAM=1
+  fi
+  PREVIOUS_BUFFER="${BUFFER_ROOT}"
+  BUFFER_EPISODES=$("${WCM_PYTHON_BIN}" -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["total_episodes"])' \
+    "${BUFFER_ROOT}/meta/info.json")
+
+  if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && artifact_complete wcm "${WCM_OUTPUT}"; then
+    reuse_stage wcm_training_buffer_not_needed
+  elif [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && artifact_complete buffer "${WCM_BUFFER}"; then
+    reuse_stage wcm_training_buffer
+  else
+    archive_incomplete "${WCM_BUFFER}"
+    echo "[RECAP ${iteration}/${ITERATIONS}] WCM subset: replay up to ${WCM_REPLAY_EPISODES} old + all $((BUFFER_EPISODES - OLD_BUFFER_EPISODES)) new episodes"
+    "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/build_wcm_training_subset.py" \
+      --buffer "${BUFFER_ROOT}" \
+      --output "${WCM_BUFFER}" \
+      --old-episode-count "${OLD_BUFFER_EPISODES}" \
+      --replay-episodes "${WCM_REPLAY_EPISODES}" \
       --seed "$((SEED + iteration))"
-    )
-    for source in "${ROLLOUT_ROOTS[@]}"; do BUFFER_ARGS+=(--rollout-root "${source}"); done
-    "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/build_replay_buffer.py" "${BUFFER_ARGS[@]}"
     REBUILD_DOWNSTREAM=1
   fi
 
@@ -368,8 +423,8 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     start_gpu_reservation "${WCM_TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "WCM dataset preparation"
     WCM_ENV=(
       PYTHON_BIN="${WCM_PYTHON_BIN}"
-      WCM_DATASET_ROOT="${BUFFER_ROOT}"
-      WCM_SUCCESS_LABELS="${BUFFER_ROOT}/meta/success_labels.json"
+      WCM_DATASET_ROOT="${WCM_BUFFER}"
+      WCM_SUCCESS_LABELS="${WCM_BUFFER}/meta/success_labels.json"
       WCM_ASSUME_SUCCESS=0
       WCM_FAILURE_PENALTY="${FAILURE_PENALTY}"
       WCM_GAMMA="${GAMMA}"
@@ -420,20 +475,33 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     REBUILD_DOWNSTREAM=1
   fi
 
-  if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && artifact_complete pi_dataset "${PI_DATASET}"; then
+  if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && \
+     artifact_complete pi_dataset "${PI_DATASET}" "${BUFFER_EPISODES}"; then
     reuse_stage pi_dataset
   else
-    archive_incomplete "${PI_DATASET}"
-    echo "[RECAP ${iteration}/${ITERATIONS}] creating advantage-conditioned Pi0.5 dataset"
+    if [[ -e "${PI_DATASET}" ]] && \
+       { [[ ! -f "${PI_DATASET}/meta/info.json" ]] || \
+         [[ ! -f "${PI_DATASET}/meta/stats.json" ]] || \
+         [[ ! -d "${PI_DATASET}/data" ]]; }; then
+      archive_incomplete "${PI_DATASET}"
+    fi
+    echo "[RECAP ${iteration}/${ITERATIONS}] incrementally updating advantage-conditioned Pi0.5 dataset"
     start_gpu_reservation "${TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "RECAP Pi0.5 dataset preparation"
-    HF_LEROBOT_HOME="${LEROBOT_HOME}" "${PI_PYTHON_BIN}" "${SCRIPT_DIR}/prepare_pi05_dataset.py" \
-      --dataset-root "${BUFFER_ROOT}" \
-      --repo-id "${REPO_ID}" \
-      --advantage-labels "${ADVANTAGES}" \
-      --task "${TASK_NAME}" \
+    PI_DATASET_ARGS=(
+      --dataset-root "${BUFFER_ROOT}"
+      --repo-id "${REPO_ID}"
+      --advantage-labels "${ADVANTAGES}"
+      --task "${TASK_NAME}"
       --mode "${OPENPI_DATA_MODE:-video}"
+    )
+    if [[ ! -e "${PI_DATASET}" && -n "${PREVIOUS_PI_DATASET}" ]]; then
+      PI_DATASET_ARGS+=(--previous-dataset "${PREVIOUS_PI_DATASET}")
+    fi
+    HF_LEROBOT_HOME="${LEROBOT_HOME}" "${PI_PYTHON_BIN}" \
+      "${SCRIPT_DIR}/prepare_pi05_recap_dataset.py" "${PI_DATASET_ARGS[@]}"
     REBUILD_DOWNSTREAM=1
   fi
+  PREVIOUS_PI_DATASET="${PI_DATASET}"
 
   if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && artifact_complete norm "${NORM_STATS}"; then
     reuse_stage norm_stats
@@ -441,18 +509,29 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     archive_incomplete "${NORM_STATS}"
     echo "[RECAP ${iteration}/${ITERATIONS}] computing robot-specific normalization"
     start_gpu_reservation "${TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "RECAP Pi0.5 dataset preparation"
-    HF_LEROBOT_HOME="${LEROBOT_HOME}" "${PI_PYTHON_BIN}" "${SCRIPT_DIR}/compute_pi05_norm_stats.py" \
-      --openpi-root "${PI_DIR}/openpi" \
-      --train-config-name "${TRAIN_CONFIG}" \
-      --repo-id "${REPO_ID}" \
-      --env-cfg-type "${ENV_CFG_TYPE}" \
-      --action-type "${ACTION_TYPE}" \
-      --output "${NORM_STATS}" \
-      --batch-size "${OPENPI_NORM_BATCH_SIZE:-64}" \
-      --num-workers "${OPENPI_NUM_WORKERS:-2}" \
+    NORM_ARGS=(
+      --openpi-root "${PI_DIR}/openpi"
+      --train-config-name "${TRAIN_CONFIG}"
+      --repo-id "${REPO_ID}"
+      --env-cfg-type "${ENV_CFG_TYPE}"
+      --action-type "${ACTION_TYPE}"
+      --output "${NORM_STATS}"
+      --batch-size "${OPENPI_NORM_BATCH_SIZE:-64}"
+      --num-workers "${OPENPI_NUM_WORKERS:-2}"
       --max-frames "${OPENPI_NORM_MAX_FRAMES:-0}"
+    )
+    if [[ "${OPENPI_NORM_MAX_FRAMES:-0}" == "0" ]]; then
+      if [[ -n "${PREVIOUS_NORM_STATS}" ]]; then
+        NORM_ARGS+=(--previous-stats "${PREVIOUS_NORM_STATS}")
+      fi
+      NORM_SCRIPT="${SCRIPT_DIR}/compute_pi05_norm_stats_incremental.py"
+    else
+      NORM_SCRIPT="${SCRIPT_DIR}/compute_pi05_norm_stats.py"
+    fi
+    HF_LEROBOT_HOME="${LEROBOT_HOME}" "${PI_PYTHON_BIN}" "${NORM_SCRIPT}" "${NORM_ARGS[@]}"
     REBUILD_DOWNSTREAM=1
   fi
+  PREVIOUS_NORM_STATS="${NORM_STATS}"
 
   TRAIN_INIT="${CURRENT_POLICY}"
   TRAIN_ARGS=(
@@ -508,7 +587,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   printf '%s\n' "${CURRENT_POLICY}" > "${RUN_ROOT}/latest_policy.txt"
   printf '%s\n' "${PREVIOUS_WCM}" > "${RUN_ROOT}/latest_wcm.txt"
 
-  if (( VALUE_VIDEO_EPISODES > 0 )); then
+  if (( VALUE_VIDEO_EPISODES > 0 && iteration > 1 )); then
     if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && artifact_complete value_videos "${ITER_DIR}/value_videos" "${VALUE_VIDEO_EPISODES}"; then
       reuse_stage value_videos
     else
@@ -520,7 +599,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
           --rollout-root "${RAW_ROLLOUTS}" \
           --output-dir "${ITER_DIR}/value_videos" \
           --max-episodes "${VALUE_VIDEO_EPISODES}" \
-          --batch-size "${RECAP_VALUE_VIDEO_BATCH_SIZE:-8}" \
+          --batch-size "${RECAP_VALUE_VIDEO_BATCH_SIZE:-16}" \
           --device "${RECAP_VALUE_VIDEO_DEVICE:-cuda}" \
           --precision "${RECAP_VALUE_VIDEO_PRECISION:-bf16}" \
           --backend "${RECAP_VALUE_VIDEO_BACKEND:-auto}" \

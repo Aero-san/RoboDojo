@@ -5,7 +5,6 @@ import inspect
 import json
 import os
 
-from client_server.ws.model_client import WsModelClient
 import numpy as np
 import transforms3d as t3d
 import websockets
@@ -14,6 +13,8 @@ from env.global_configs import *
 from env.global_configs import BENCHMARK
 from env.observation_manager.obs_manager import ObsManager
 from env.seed_manager.seed_manager import SeedManager
+from src.eval_client.action_noise_recorder import ActionNoiseRecorder
+from src.eval_client.model_client import WsModelClient
 from src.eval_client.rollout_recorder import RolloutRecorder
 from utils.cluttered_generator import UnStableError
 from utils.pipeline_utils import get_robot_action_dim_info
@@ -203,6 +204,7 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             evaluation_id = self.deploy_cfg.get("evaluation_id", self.run_id)
             trial_id = self.deploy_cfg.get("trial_id", f"{self.task_name}-{self.run_id}")
             action_case_id = self.deploy_cfg.get("action_case_id", f"{self.task_name}_case")
+            action_noise_root = os.environ.get("ROBODOJO_ACTION_NOISE_DIR", "").strip()
             self.model_client = WsModelClient(
                 url=policy_server_url,
                 evaluation_id=evaluation_id,
@@ -211,6 +213,7 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 repeat_index=self.deploy_cfg.get("repeat_index"),
                 ws_ping_interval_s=self.deploy_cfg.get("ws_ping_interval_s", 60.0),
                 ws_ping_timeout_s=self.deploy_cfg.get("ws_ping_timeout_s", 120.0),
+                require_initial_noise=bool(action_noise_root),
             )
             self.robot_action_dim_info = get_robot_action_dim_info(env_cfg=self.eval_cfg)
             rollout_root = os.environ.get("ROBODOJO_ROLLOUT_DIR", "").strip()
@@ -225,11 +228,18 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 if rollout_root
                 else None
             )
+            self.action_noise_recorder = (
+                ActionNoiseRecorder(action_noise_root, self.run_id, self.task_name)
+                if action_noise_root
+                else None
+            )
 
         def close(self):
             self._abort_video_writers()
             if self.rollout_recorder is not None:
                 self.rollout_recorder.close()
+            if self.action_noise_recorder is not None:
+                self.action_noise_recorder.close()
             self.obs_manager.reset()
             super().close()
 
@@ -255,6 +265,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             self._abort_video_writers()
             if self.rollout_recorder is not None:
                 self.rollout_recorder.abort()
+            if self.action_noise_recorder is not None:
+                self.action_noise_recorder.abort()
             self.episode_nums = len(real_indices)
             self.unstable_envs = set()
 
@@ -413,6 +425,15 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                         action_type,
                         reference_action=reference_action,
                     )
+
+                if self.action_noise_recorder is not None:
+                    initial_noise = self.model_client.pop_initial_noise(env_idx)
+                    if initial_noise is not None:
+                        self.action_noise_recorder.record(
+                            env_idx,
+                            initial_noise,
+                            rollout_step=self.take_action_cnt[env_idx],
+                        )
 
                 self.take_action_cnt[env_idx] += 1
                 print(
@@ -839,6 +860,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 self.episode_nums -= len(unstable_in_batch)
                 if self.rollout_recorder is not None:
                     self.rollout_recorder.abort(unstable_in_batch)
+                if self.action_noise_recorder is not None:
+                    self.action_noise_recorder.abort(unstable_in_batch)
             eval_envs = [e for e in exist_envs if e not in self.unstable_envs]
             episode_outcomes = []
             for idx, env_idx in enumerate(eval_envs):
@@ -890,6 +913,15 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                         layout_id=int(self.env_seeds[env_idx]),
                     )
                     self.eval_result["details"][index]["rollout_path"] = str(rollout_path)
+                if self.action_noise_recorder is not None:
+                    noise_path = self.action_noise_recorder.finalize(
+                        env_idx,
+                        index,
+                        success=bool(self.success[env_idx]),
+                        layout_id=int(self.env_seeds[env_idx]),
+                    )
+                    if noise_path is not None:
+                        self.eval_result["details"][index]["action_noise_path"] = str(noise_path)
                 if self.video_enabled:
                     video_path = os.path.join(self.save_dir, f"episode_{index:07d}.mp4")
                     self.save_video(env_idx, video_path, tag)

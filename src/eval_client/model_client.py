@@ -1,0 +1,187 @@
+"""RoboDojo WebSocket policy client with per-action inference metadata."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any, cast
+
+from client_server.ws.protocol.client import PolicyEvalClient, PolicyEvalClientConfig
+
+
+class WsModelClient:
+    """Synchronous policy client which preserves optional inference metadata.
+
+    A diffusion/flow policy can return ``initial_noise_actions`` beside
+    ``actions``.  The tensor describes the initial noise used to generate the
+    whole returned action chunk.  It is exposed once, alongside the first
+    executed action in that chunk.
+    """
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        evaluation_id: str,
+        trial_id: str,
+        action_case_id: str | None = None,
+        repeat_index: int | None = None,
+        ws_ping_interval_s: float | None = 60.0,
+        ws_ping_timeout_s: float | None = 120.0,
+        require_initial_noise: bool = False,
+        client: Any | None = None,
+    ) -> None:
+        self.action_case_id = action_case_id
+        self.trial_id = trial_id
+        self.repeat_index = repeat_index
+        self.require_initial_noise = require_initial_noise
+        self._step = 0
+        self._latest_obs: Any | None = None
+        self._latest_obs_batch: list[Any] | None = None
+        self._reference_action_queues: dict[int, list[Any]] = {}
+        self._initial_noise_queues: dict[int, list[Any | None]] = {}
+        self._loop = asyncio.new_event_loop()
+        self._client = client or PolicyEvalClient(
+            PolicyEvalClientConfig(
+                url=url,
+                evaluation_id=evaluation_id,
+                ws_ping_interval_s=ws_ping_interval_s,
+                ws_ping_timeout_s=ws_ping_timeout_s,
+            )
+        )
+        self._loop.run_until_complete(self._client.connect(handshake=True))
+
+    @staticmethod
+    def _chunk_size(actions: Any) -> int:
+        try:
+            return len(actions)
+        except TypeError:
+            return 1
+
+    def _capture_metadata(self, env_idx: int, payload: dict[str, Any]) -> None:
+        actions = payload.get("actions")
+        reference_actions = payload.get("reference_actions")
+        if reference_actions is not None:
+            self._reference_action_queues[int(env_idx)] = list(reference_actions)
+
+        initial_noise = payload.get("initial_noise_actions")
+        if initial_noise is None:
+            if self.require_initial_noise:
+                raise ValueError(
+                    "Action-noise visualization is enabled, but the policy response has no "
+                    "'initial_noise_actions' field."
+                )
+            return
+        chunk_size = max(1, self._chunk_size(actions))
+        self._initial_noise_queues[int(env_idx)] = [initial_noise] + [None] * (chunk_size - 1)
+
+    def call(self, func_name: str | None = None, obs: Any = None, **kwargs: Any) -> Any:
+        if func_name == "prepare_case":
+            if self.action_case_id is None:
+                raise ValueError("prepare_case requires action_case_id")
+            response = self._loop.run_until_complete(
+                self._client.prepare_case(
+                    self.action_case_id,
+                    case_meta=obs if isinstance(obs, dict) else None,
+                )
+            )
+            return response.payload.get("result")
+
+        if func_name == "reset":
+            self._step = 0
+            self._latest_obs = None
+            self._latest_obs_batch = None
+            self._reference_action_queues.clear()
+            self._initial_noise_queues.clear()
+            response = self._loop.run_until_complete(
+                self._client.reset(
+                    trial_id=self.trial_id,
+                    action_case_id=self.action_case_id,
+                    repeat_index=self.repeat_index,
+                    payload=obs if isinstance(obs, dict) else None,
+                )
+            )
+            return response.payload.get("result")
+
+        if func_name == "update_obs":
+            self._latest_obs = obs
+            return None
+
+        if func_name == "get_action":
+            observation = obs if obs is not None else self._latest_obs
+            if observation is None:
+                raise ValueError("get_action requires obs or a previous update_obs call")
+            response = self._loop.run_until_complete(
+                self._client.infer(
+                    cast(dict[str, Any], observation),
+                    trial_id=self.trial_id,
+                    action_case_id=self.action_case_id,
+                    step=self._step,
+                )
+            )
+            self._step += 1
+            self._capture_metadata(0, response.payload)
+            return response.payload.get("actions")
+
+        if func_name == "update_obs_batch":
+            self._latest_obs_batch = list(obs) if obs is not None else []
+            return None
+
+        if func_name == "get_action_batch":
+            observations = self._latest_obs_batch
+            if observations is None:
+                raise ValueError("get_action_batch requires a previous update_obs_batch call")
+            env_idx_list = list(obs) if obs is not None else list(range(len(observations)))
+            if len(env_idx_list) != len(observations):
+                raise ValueError("get_action_batch env indices do not match the observation batch.")
+            actions = []
+            for env_idx, observation in zip(env_idx_list, observations, strict=True):
+                response = self._loop.run_until_complete(
+                    self._client.infer(
+                        cast(dict[str, Any], observation),
+                        trial_id=self.trial_id,
+                        action_case_id=self.action_case_id,
+                        step=self._step,
+                    )
+                )
+                actions.append(response.payload.get("actions"))
+                self._capture_metadata(int(env_idx), response.payload)
+            self._step += 1
+            return actions
+
+        if func_name == "trial_end":
+            response = self._loop.run_until_complete(
+                self._client.trial_end(
+                    trial_id=self.trial_id,
+                    action_case_id=self.action_case_id,
+                    result=obs if isinstance(obs, dict) else None,
+                )
+            )
+            return response.payload.get("result")
+
+        raise NotImplementedError(f"unsupported websocket model call: {func_name}")
+
+    def pop_reference_action(self, env_idx: int = 0) -> Any | None:
+        queue = self._reference_action_queues.get(int(env_idx))
+        if not queue:
+            return None
+        return queue.pop(0)
+
+    def pop_initial_noise(self, env_idx: int = 0) -> Any | None:
+        queue = self._initial_noise_queues.get(int(env_idx))
+        if not queue:
+            return None
+        return queue.pop(0)
+
+    def close(self) -> None:
+        if self._loop.is_closed():
+            return
+        try:
+            self._loop.run_until_complete(self._client.close())
+        finally:
+            self._loop.close()
+
+    def __enter__(self) -> WsModelClient:
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.close()

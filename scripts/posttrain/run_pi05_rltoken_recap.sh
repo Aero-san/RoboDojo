@@ -81,7 +81,10 @@ WCM_TRAIN_GPUS="${WCM_TRAIN_GPUS:-${DETECTED_GPUS}}"
 ACTOR_TRAIN_GPUS="${ACTOR_TRAIN_GPUS:-${WCM_TRAIN_GPUS}}"
 ROLLOUT_GPUS="${RLTOKEN_ROLLOUT_GPUS:-${ACTOR_TRAIN_GPUS}}"
 ROLLOUT_ENVS_PER_WORKER="${RLTOKEN_ROLLOUT_ENVS_PER_WORKER:-4}"
+MAX_DEMO_EPISODES="${RECAP_MAX_DEMO_EPISODES:-100}"
+WCM_REPLAY_EPISODES="${RLTOKEN_RECAP_WCM_REPLAY_EPISODES:-${RECAP_WCM_REPLAY_EPISODES:-20}}"
 SEED="${SEED:-0}"
+ROLLOUT_LAYOUT_SEED="${RLTOKEN_ROLLOUT_LAYOUT_SEED:-0}"
 GAMMA="${RECAP_GAMMA:-1.0}"
 FAILURE_PENALTY="${WCM_FAILURE_PENALTY:-300}"
 
@@ -109,6 +112,7 @@ Options:
   --actor-train-gpus IDS            Actor DDP GPU list
   --rollout-gpus IDS                GPUs paired as policy,Isaac workers
   --rollout-envs-per-worker N       Vectorized Isaac envs in each worker
+  --wcm-replay-episodes K           Old episodes sampled for each later WCM update
 
 Additional controls are documented in
 configs/posttrain/pi05_rltoken_recap.yaml.example.
@@ -134,6 +138,7 @@ while [[ $# -gt 0 ]]; do
     --actor-train-gpus) ACTOR_TRAIN_GPUS="$2"; shift 2 ;;
     --rollout-gpus) ROLLOUT_GPUS="$2"; shift 2 ;;
     --rollout-envs-per-worker) ROLLOUT_ENVS_PER_WORKER="$2"; shift 2 ;;
+    --wcm-replay-episodes) WCM_REPLAY_EPISODES="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
@@ -154,6 +159,12 @@ fi
 [[ "${ROLLOUT_EPISODES}" =~ ^[1-9][0-9]*$ ]] || { echo "--rollout-episodes must be positive" >&2; exit 2; }
 [[ "${ROLLOUT_ENVS_PER_WORKER}" =~ ^[1-9][0-9]*$ ]] || {
   echo "--rollout-envs-per-worker must be positive" >&2
+  exit 2
+}
+[[ "${MAX_DEMO_EPISODES}" =~ ^[0-9]+$ ]] || { echo "RECAP_MAX_DEMO_EPISODES must be non-negative" >&2; exit 2; }
+[[ "${WCM_REPLAY_EPISODES}" =~ ^[0-9]+$ ]] || { echo "--wcm-replay-episodes must be non-negative" >&2; exit 2; }
+[[ "${ROLLOUT_LAYOUT_SEED}" =~ ^[0-9]+$ ]] || {
+  echo "RLTOKEN_ROLLOUT_LAYOUT_SEED must be non-negative" >&2
   exit 2
 }
 [[ "${ACTOR_OBJECTIVE}" == "wcm_actor" || "${ACTOR_OBJECTIVE}" == "rltoken" ]] || {
@@ -230,38 +241,72 @@ done
 CURRENT_ACTOR="${INITIAL_ACTOR_CHECKPOINT}"
 PREVIOUS_WCM="${INITIAL_WCM_CHECKPOINT}"
 ROLLOUT_ROOTS=()
+PREVIOUS_BUFFER=""
 
 for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   ITER_DIR=$(printf '%s/iteration_%02d' "${RUN_ROOT}" "${iteration}")
   BUFFER_ROOT="${ITER_DIR}/replay_buffer"
+  WCM_BUFFER="${ITER_DIR}/wcm_training_buffer"
   WCM_OUTPUT="${ITER_DIR}/wcm"
   ACTOR_OUTPUT="${ITER_DIR}/actor.pt"
   RAW_ROLLOUTS="${ITER_DIR}/rollouts"
   mkdir -p "${ITER_DIR}"
 
+  OLD_BUFFER_EPISODES=0
+  if [[ -n "${PREVIOUS_BUFFER}" ]]; then
+    OLD_BUFFER_EPISODES=$("${WCM_PYTHON_BIN}" -c \
+      'import json,sys; print(json.load(open(sys.argv[1]))["total_episodes"])' \
+      "${PREVIOUS_BUFFER}/meta/info.json")
+  fi
   echo "[RLToken RECAP ${iteration}/${ITERATIONS}] building SFT + rollout replay buffer"
   start_gpu_reservation "${WCM_TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "RLToken replay-buffer and WCM dataset preparation"
-  BUFFER_ARGS=(
-    --demo-root "${DEMO_ROOT}"
-    --output "${BUFFER_ROOT}"
-    --task "${TASK_NAME}"
+  if [[ -n "${PREVIOUS_BUFFER}" ]]; then
+    newest_rollout="${ROLLOUT_ROOTS[$((${#ROLLOUT_ROOTS[@]} - 1))]}"
+    INCREMENTAL_BUFFER_ARGS=(
+      --previous-buffer "${PREVIOUS_BUFFER}"
+      --rollout-root "${newest_rollout}"
+      --output "${BUFFER_ROOT}"
+      --task "${TASK_NAME}"
+      --seed "$((SEED + iteration))"
+    )
+    if [[ -n "${RECAP_MAX_ROLLOUT_EPISODES:-}" ]]; then
+      INCREMENTAL_BUFFER_ARGS+=(--max-rollout-episodes "${RECAP_MAX_ROLLOUT_EPISODES}")
+    fi
+    "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/build_replay_buffer_incremental.py" \
+      "${INCREMENTAL_BUFFER_ARGS[@]}"
+  else
+    BUFFER_ARGS=(
+      --demo-root "${DEMO_ROOT}"
+      --output "${BUFFER_ROOT}"
+      --task "${TASK_NAME}"
+      --seed "$((SEED + iteration))"
+    )
+    BUFFER_ARGS+=(--max-demo-episodes "${MAX_DEMO_EPISODES}")
+    if [[ -n "${RECAP_MAX_ROLLOUT_EPISODES:-}" ]]; then
+      BUFFER_ARGS+=(--max-rollout-episodes "${RECAP_MAX_ROLLOUT_EPISODES}")
+    fi
+    for source in "${ROLLOUT_ROOTS[@]}"; do BUFFER_ARGS+=(--rollout-root "${source}"); done
+    "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/build_replay_buffer.py" "${BUFFER_ARGS[@]}"
+  fi
+  PREVIOUS_BUFFER="${BUFFER_ROOT}"
+
+  BUFFER_EPISODES=$("${WCM_PYTHON_BIN}" -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["total_episodes"])' \
+    "${BUFFER_ROOT}/meta/info.json")
+  echo "[RLToken RECAP ${iteration}/${ITERATIONS}] WCM subset: replay up to ${WCM_REPLAY_EPISODES} old + all $((BUFFER_EPISODES - OLD_BUFFER_EPISODES)) new episodes"
+  "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/build_wcm_training_subset.py" \
+    --buffer "${BUFFER_ROOT}" \
+    --output "${WCM_BUFFER}" \
+    --old-episode-count "${OLD_BUFFER_EPISODES}" \
+    --replay-episodes "${WCM_REPLAY_EPISODES}" \
     --seed "$((SEED + iteration))"
-  )
-  if [[ -n "${RECAP_MAX_DEMO_EPISODES:-}" ]]; then
-    BUFFER_ARGS+=(--max-demo-episodes "${RECAP_MAX_DEMO_EPISODES}")
-  fi
-  if [[ -n "${RECAP_MAX_ROLLOUT_EPISODES:-}" ]]; then
-    BUFFER_ARGS+=(--max-rollout-episodes "${RECAP_MAX_ROLLOUT_EPISODES}")
-  fi
-  for source in "${ROLLOUT_ROOTS[@]}"; do BUFFER_ARGS+=(--rollout-root "${source}"); done
-  "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/build_replay_buffer.py" "${BUFFER_ARGS[@]}"
 
   echo "[RLToken RECAP ${iteration}/${ITERATIONS}] updating WCM"
   WCM_ENV=(
     PYTHON_BIN="${WCM_PYTHON_BIN}"
     CUDA_VISIBLE_DEVICES="${WCM_TRAIN_GPUS}"
-    WCM_DATASET_ROOT="${BUFFER_ROOT}"
-    WCM_SUCCESS_LABELS="${BUFFER_ROOT}/meta/success_labels.json"
+    WCM_DATASET_ROOT="${WCM_BUFFER}"
+    WCM_SUCCESS_LABELS="${WCM_BUFFER}/meta/success_labels.json"
     WCM_ASSUME_SUCCESS=0
     WCM_FAILURE_PENALTY="${FAILURE_PENALTY}"
     WCM_GAMMA="${GAMMA}"
@@ -335,7 +380,9 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   declare -a rollout_worker_statuses=()
   episodes_per_worker=$((ROLLOUT_EPISODES / ROLLOUT_WORKER_COUNT))
   extra_episodes=$((ROLLOUT_EPISODES % ROLLOUT_WORKER_COUNT))
-  rollout_seed=$((SEED + iteration - 1))
+  # RoboDojo's eval seed selects a concrete Eval_Layout directory. Keep it
+  # fixed across actor iterations; worker layout_shard provides disjoint work.
+  rollout_seed="${ROLLOUT_LAYOUT_SEED}"
   rollout_run_prefix="$(date +%Y-%m-%d_%H-%M-%S)-$$-iter$(printf '%02d' "${iteration}")"
   for ((worker = 0; worker < ROLLOUT_WORKER_COUNT; worker++)); do
     worker_episodes="${episodes_per_worker}"

@@ -37,6 +37,10 @@ resume="false"
 fail_fast="false"
 dry_run="false"
 limit=""
+action_noise_viz="false"
+action_noise_dir="${ROBODOJO_ACTION_NOISE_DIR:-}"
+noise_viz_method="${ROBODOJO_NOISE_VIZ_METHOD:-umap}"
+noise_viz_k="${ROBODOJO_NOISE_VIZ_K:-5}"
 
 usage() {
   cat <<'EOF'
@@ -65,6 +69,10 @@ Options:
   --run-id ID         Stable run id used in result paths and summaries.
   --eval-num NUM      Episode count for each task (default: 1). Use `native` to use per-task counts from _task.yml.
   --max-steps NUM     Override each task's maximum deployed actions per episode.
+  --action-noise-viz  Record initial action noise and plot all tasks together after the sweep.
+  --noise-viz-dir PATH  Raw/plot output root (default: eval_result/action_noise/<run-id>).
+  --noise-viz-method NAME  Reduction method: umap (default) or tsne.
+  --noise-viz-k NUM   Highlighted points per selected success/failure rollout (default: 5).
   --dataset NAME      eval.sh dataset arg (default: RoboDojo)
   --ckpt NAME         Policy checkpoint name (required)
   --env-cfg NAME      env_cfg stem (default: arx_x5)
@@ -126,6 +134,10 @@ while [[ $# -gt 0 ]]; do
     --run-id) need_value "$@"; run_id="$2"; shift 2 ;;
     --eval-num) need_value "$@"; eval_num="$2"; shift 2 ;;
     --max-steps) need_value "$@"; max_steps="$2"; shift 2 ;;
+    --action-noise-viz) action_noise_viz="true"; shift ;;
+    --noise-viz-dir) need_value "$@"; action_noise_dir="$2"; action_noise_viz="true"; shift 2 ;;
+    --noise-viz-method) need_value "$@"; noise_viz_method="$2"; action_noise_viz="true"; shift 2 ;;
+    --noise-viz-k) need_value "$@"; noise_viz_k="$2"; action_noise_viz="true"; shift 2 ;;
     --dataset) need_value "$@"; dataset="$2"; shift 2 ;;
     --ckpt) need_value "$@"; ckpt="$2"; shift 2 ;;
     --env-cfg) need_value "$@"; env_cfg="$2"; shift 2 ;;
@@ -156,6 +168,14 @@ done
 
 if [[ -n "${max_steps}" && ! "${max_steps}" =~ ^[1-9][0-9]*$ ]]; then
   echo "[smoke_all_tasks] --max-steps must be a positive integer" >&2
+  exit 2
+fi
+if [[ "${noise_viz_method}" != "umap" && "${noise_viz_method}" != "tsne" ]]; then
+  echo "[smoke_all_tasks] --noise-viz-method must be umap or tsne" >&2
+  exit 2
+fi
+if [[ ! "${noise_viz_k}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[smoke_all_tasks] --noise-viz-k must be a positive integer" >&2
   exit 2
 fi
 
@@ -215,6 +235,17 @@ summary_path="${summary_path:-${ROOT_DIR}/smoke_results/${run_id}.json}"
 markdown_path="${markdown_path:-${ROOT_DIR}/smoke_results/${run_id}.md}"
 log_dir="${ROOT_DIR}/smoke_results/${run_id}/logs"
 mkdir -p "$(dirname "${summary_path}")" "$(dirname "${markdown_path}")" "${log_dir}"
+if [[ "${action_noise_viz}" == "true" ]]; then
+  if [[ -z "${action_noise_dir}" ]]; then
+    action_noise_dir="${ROOT_DIR}/eval_result/action_noise/${run_id}"
+  else
+    action_noise_dir="$(abs_path "${action_noise_dir}")"
+  fi
+  export ROBODOJO_ACTION_NOISE_DIR="${action_noise_dir}"
+  export ROBODOJO_ACTION_NOISE_DEFER_PLOT=1
+  export ROBODOJO_NOISE_VIZ_METHOD="${noise_viz_method}"
+  export ROBODOJO_NOISE_VIZ_K="${noise_viz_k}"
+fi
 
 RESULTS_TSV="$(mktemp)"
 trap 'rm -f "${RESULTS_TSV}"' EXIT
@@ -805,6 +836,14 @@ run_eval_for_task() {
   if [[ -n "${max_steps}" ]]; then
     eval_cmd+=(--max-steps "${max_steps}")
   fi
+  if [[ "${action_noise_viz}" == "true" ]]; then
+    eval_cmd+=(
+      --action-noise-viz
+      --noise-viz-dir "${action_noise_dir}"
+      --noise-viz-method "${noise_viz_method}"
+      --noise-viz-k "${noise_viz_k}"
+    )
+  fi
   if [[ "${dry_run}" == "true" ]]; then
     eval_cmd+=(--dry-run)
   fi
@@ -1098,6 +1137,19 @@ else
 fi
 
 write_summaries
+if [[ "${action_noise_viz}" == "true" && "${dry_run}" != "true" ]]; then
+  plot_cmd=(
+    python3 "${ROOT_DIR}/scripts/internal/plot_action_noise.py"
+    --input-dir "${action_noise_dir}"
+    --method "${noise_viz_method}"
+    --highlight-k "${noise_viz_k}"
+  )
+  if command -v conda >/dev/null 2>&1; then
+    conda run -n "${eval_env}" "${plot_cmd[@]}"
+  else
+    "${plot_cmd[@]}"
+  fi
+fi
 fail_count="$(count_failures)"
 echo "[smoke_all_tasks] complete: ${summary_path}"
 if [[ "${fail_count}" -gt 0 ]]; then

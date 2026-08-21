@@ -25,6 +25,9 @@ Rigid:
       rotate_deg: 45
       relative_plane: "egg_basket/egg_basket/0"
       margin: 0
+      # Eggs are intentionally free to settle/roll inside the basket before
+      # the policy starts, so they are excluded from the stability precheck.
+      need_check_stable: False
 
     category:
       -

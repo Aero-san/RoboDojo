@@ -152,25 +152,12 @@ if [[ -n "${max_steps}" ]]; then
 fi
 
 KIT_ENABLE_EXTS=(
-  "isaacsim.replicator.behavior"
   "isaacsim.sensors.camera"
-)
-
-# Evaluation is headless.  These extensions only provide the interactive USD
-# property panels; in Isaac Sim 4.5 they can receive a late selection callback
-# after the panel has been destroyed and raise a NoneType traceback.  They are
-# unrelated to camera/offscreen rendering and are not needed by evaluation.
-KIT_DISABLE_EXTS=(
-  "omni.kit.property.usd"
-  "omni.kit.window.property"
 )
 
 KIT_ARGS=""
 for ext in "${KIT_ENABLE_EXTS[@]}"; do
   KIT_ARGS+=" --enable ${ext}"
-done
-for ext in "${KIT_DISABLE_EXTS[@]}"; do
-  KIT_ARGS+=" --disable ${ext}"
 done
 
 # Generated once per eval invocation. Carries the same identity through

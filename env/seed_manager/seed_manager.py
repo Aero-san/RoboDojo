@@ -31,6 +31,19 @@ class SeedManager:
     ):
         self.eval_seed = self.config.get("seed", 0)
         layout_dir = Path(ASSETS_PATH, "Eval_Layout", BENCHMARK, self.config_name, str(self.eval_seed))
+        if not layout_dir.is_dir():
+            config_root = layout_dir.parent
+            available_seeds = sorted(
+                (path.name for path in config_root.iterdir() if path.is_dir()),
+                key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value),
+            ) if config_root.is_dir() else []
+            available = ", ".join(available_seeds) if available_seeds else "none"
+            raise FileNotFoundError(
+                f"Evaluation layout seed {self.eval_seed!r} is unavailable for "
+                f"config {self.config_name!r}: {layout_dir}. Available seeds: {available}. "
+                "The eval seed selects a layout directory; it must not be derived from a "
+                "training iteration or episode index."
+            )
         pattern = re.compile(rf"{re.escape(self.task_name)}_\d+\.json")
         matching_files = sorted(
             [p for p in layout_dir.iterdir() if pattern.fullmatch(p.name)],
@@ -50,6 +63,15 @@ class SeedManager:
                 f"0 <= shard_index < shard_count, got {shard_index}/{shard_count}."
             )
         all_layout_ids = list(range(len(matching_files)))[shard_index::shard_count]
+        layout_offset = int(self.config.get("layout_offset", 0))
+        if layout_offset < 0:
+            raise ValueError(f"Layout offset must be non-negative, got {layout_offset}.")
+        if layout_offset:
+            all_layout_ids = all_layout_ids[layout_offset:]
+            print(
+                f"[SeedManager] layout offset={layout_offset} "
+                f"remaining={len(all_layout_ids)}/{len(matching_files)}"
+            )
         excluded = set(int(s) for s in (completed_layout_ids or [])) | set(
             int(s) for s in (abandoned_layout_ids or [])
         )

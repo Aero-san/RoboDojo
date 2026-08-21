@@ -22,6 +22,8 @@ typing_extensions==4.12.2
 filelock==3.13.1
 websockets==12.0
 scipy==1.15.3
+numba==0.59.1
+llvmlite==0.42.0
 warp-lang==1.11.0
 click==8.1.7
 psutil==5.9.8
@@ -59,6 +61,8 @@ pin_runtime_deps() {
     "wheel==0.45.1" \
     "starlette==0.45.3" \
     "scipy==1.15.3" \
+    "numba==0.59.1" \
+    "llvmlite==0.42.0" \
     "warp-lang==1.11.0" \
     "onnx>=1.18,<1.22" \
     "ipython<9" \
@@ -115,7 +119,15 @@ setup_conda() {
 setup_base_deps() {
   info "[2/7] Installing base pip dependencies..."
   pip_install -r "$CURRENT_DIR/scripts/requirements.txt"
-  pip_install opencv-python-headless==4.11.0.86 pillow matplotlib "scipy==1.15.3" scikit-learn
+  pip_install \
+    opencv-python-headless==4.11.0.86 \
+    pillow \
+    matplotlib \
+    "scipy==1.15.3" \
+    "scikit-learn==1.6.1" \
+    "umap-learn==0.5.7" \
+    "numba==0.59.1" \
+    "llvmlite==0.42.0"
   pip_install numpy==1.26.0
 }
 setup_submodules() {

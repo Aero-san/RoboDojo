@@ -83,15 +83,15 @@ WCM_TRAIN_GPUS=0,1,2,3 \
 NUM_TRAIN_STEPS=500 \
 RECAP_VALUE_VIDEO_EPISODES=3 \
 RECAP_VALUE_VIDEO_GPU=2 \
-TASK_NAME=put_bottles_into_dustbin \
 DEMO_ROOT=$PWD/data/RoboDojo_lerobot_v21_video \
 RECAP_ITERATIONS=20 \
 RECAP_ROLLOUT_EPISODES=10 \
 RECAP_MAX_DEMO_EPISODES=100 \
+RECAP_WCM_REPLAY_EPISODES=20 \
 INITIAL_WCM_CHECKPOINT=/share/mingyang/RoboDojo/outputs/wcm/robodojo_pi05/deploy.pt \
 OPENPI_FSDP_DEVICES=2 \
 OPENPI_BATCH_SIZE=32 \
-WCM_PER_DEVICE_BATCH_SIZE=16 \
+WCM_PER_DEVICE_BATCH_SIZE=24 \
 POLICY_GPU=0 \
 ENV_GPU=1 \
 bash scripts/posttrain/run_pi05_recap.sh --task put_bottles_into_dustbin --initial-policy-checkpoint $PWD/XPolicyLab/policy/Pi_05/checkpoints/RoboDojo-put_bottles_into_dustbin-arx_x5-joint-0/11999

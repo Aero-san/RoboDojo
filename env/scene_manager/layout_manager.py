@@ -182,6 +182,16 @@ class LayoutManager:
                         inst["prim_path"] = prim_path
                         inst["usd_path"] = usd_path
                         inst["inst_name"] = inst_name
+                        configured_stability = self._get_configured_stability(
+                            object_type=key,
+                            category=cat,
+                            label=inst.get("label"),
+                        )
+                        if configured_stability is not None:
+                            # Cached layouts can outlive task-config changes.
+                            # Apply the current task policy instead of keeping
+                            # a stale value serialized in the layout file.
+                            inst["need_check_stable"] = configured_stability
                         if "type" in inst and inst["type"] == "cluttered":
                             modeldir = f"{OBJECTS_PATH}/Clutter/{cat}"
                         else:
@@ -204,6 +214,29 @@ class LayoutManager:
                 value = self.select_light(env_idx, light_cfg=value)
         self.cluttered_generator_init(env_idx)
         return env_config
+
+    def _get_configured_stability(self, object_type: str, category: str, label: str | None):
+        """Return the task-config stability override for a saved object."""
+        object_configs = self.task_config.get(object_type, [])
+        for object_config in object_configs:
+            category_configs = object_config.get("category", [])
+            category_names = {
+                category_config.get("name")
+                for category_config in category_configs
+                if category_config.get("name") is not None
+            }
+            if category not in category_names:
+                continue
+
+            select_mode = object_config.get("select_mode", {})
+            labels = select_mode.get("label", [])
+            if labels and label not in labels:
+                continue
+
+            common = object_config.get("common", {})
+            if "need_check_stable" in common:
+                return bool(common["need_check_stable"])
+        return None
 
     def cluttered_generator_init(self, env_idx):
         for key in self.cluttered_generator.keys():

@@ -81,6 +81,24 @@ run_dimensions() {
   python3 "${ROOT_DIR}/scripts/internal/task_inventory.py" --list-dimensions "$@"
 }
 
+plot_action_noise() {
+  local input_dir="$1"
+  local method="$2"
+  local highlight_k="$3"
+  local python_env="${4:-}"
+  local -a plot_cmd=(
+    python3 "${ROOT_DIR}/scripts/internal/plot_action_noise.py"
+    --input-dir "${input_dir}"
+    --method "${method}"
+    --highlight-k "${highlight_k}"
+  )
+  if [[ -n "${python_env}" ]] && command -v conda >/dev/null 2>&1; then
+    conda run -n "${python_env}" "${plot_cmd[@]}"
+  else
+    "${plot_cmd[@]}"
+  fi
+}
+
 run_eval() {
   local dataset="RoboDojo"
   local task=""
@@ -100,9 +118,14 @@ run_eval() {
   local num_envs="${ROBODOJO_NUM_ENVS:-}"
   local max_steps="${ROBODOJO_MAX_STEPS:-}"
   local layout_shard="${ROBODOJO_LAYOUT_SHARD:-}"
+  local layout_offset="${ROBODOJO_LAYOUT_OFFSET:-0}"
   local dry_run="false"
   local save_video="true"
   local rollout_dir="${ROBODOJO_ROLLOUT_DIR:-}"
+  local action_noise_viz="false"
+  local action_noise_dir="${ROBODOJO_ACTION_NOISE_DIR:-}"
+  local noise_viz_method="${ROBODOJO_NOISE_VIZ_METHOD:-umap}"
+  local noise_viz_k="${ROBODOJO_NOISE_VIZ_K:-5}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -122,9 +145,14 @@ run_eval() {
       --num-envs) need_value "$@"; num_envs="$2"; shift 2 ;;
       --max-steps) need_value "$@"; max_steps="$2"; shift 2 ;;
       --layout-shard) need_value "$@"; layout_shard="$2"; shift 2 ;;
+      --layout-offset) need_value "$@"; layout_offset="$2"; shift 2 ;;
       --save-video) save_video="true"; shift ;;
       --no-video) save_video="false"; shift ;;
       --rollout-dir) need_value "$@"; rollout_dir="$(abs_path "$2")"; shift 2 ;;
+      --action-noise-viz) action_noise_viz="true"; shift ;;
+      --noise-viz-dir) need_value "$@"; action_noise_dir="$(abs_path "$2")"; action_noise_viz="true"; shift 2 ;;
+      --noise-viz-method) need_value "$@"; noise_viz_method="$2"; action_noise_viz="true"; shift 2 ;;
+      --noise-viz-k) need_value "$@"; noise_viz_k="$2"; action_noise_viz="true"; shift 2 ;;
       --dry-run) dry_run="true"; shift ;;
       -h|--help)
         cat <<'EOF'
@@ -141,9 +169,14 @@ Common options:
   --num-envs NUM          Vectorized Isaac environments in this client process
   --max-steps NUM         Override the task's maximum deployed actions per episode
   --layout-shard I/N      Use non-overlapping layout shard I out of N (zero-based)
+  --layout-offset N       Skip the first N layouts inside the selected shard
   --save-video           Save one MP4 per camera and rollout (default)
   --no-video             Disable MP4 encoding; camera observations remain enabled for vision policies
   --rollout-dir PATH      Record state/action/camera trajectories with simulator success labels
+  --action-noise-viz      Record policy initial noise and generate two low-dimensional plots
+  --noise-viz-dir PATH    Raw/plot output root (default: eval_result/action_noise/<run-id>)
+  --noise-viz-method NAME Reduction method: umap (default) or tsne
+  --noise-viz-k NUM       Evenly spaced highlighted points per selected rollout (default: 5)
   --env-cfg NAME        env_cfg stem (default: arx_x5)
   --expert-num NUM      Expert-data count for policy eval.sh files that accept it (default: 100)
   --action-type NAME    Policy action type (default: ee)
@@ -185,6 +218,18 @@ EOF
       echo "[robodojo eval] layout shard index must be smaller than shard count" >&2
       exit 2
     fi
+  fi
+  if [[ ! "${layout_offset}" =~ ^[0-9]+$ ]]; then
+    echo "[robodojo eval] --layout-offset must be a non-negative integer" >&2
+    exit 2
+  fi
+  if [[ "${noise_viz_method}" != "umap" && "${noise_viz_method}" != "tsne" ]]; then
+    echo "[robodojo eval] --noise-viz-method must be umap or tsne" >&2
+    exit 2
+  fi
+  if [[ ! "${noise_viz_k}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[robodojo eval] --noise-viz-k must be a positive integer" >&2
+    exit 2
   fi
   local visible_gpu_list="${CUDA_VISIBLE_DEVICES:-}"
   local -a visible_gpu_ids=()
@@ -263,15 +308,27 @@ EOF
   else
     unset ROBODOJO_LAYOUT_SHARD 2>/dev/null || true
   fi
+  export ROBODOJO_LAYOUT_OFFSET="${layout_offset}"
   export ROBODOJO_SAVE_VIDEO="$([[ "${save_video}" == "true" ]] && echo 1 || echo 0)"
   if [[ -n "${rollout_dir}" ]]; then
     export ROBODOJO_ROLLOUT_DIR="${rollout_dir}"
   else
     unset ROBODOJO_ROLLOUT_DIR 2>/dev/null || true
   fi
+  if [[ "${action_noise_viz}" == "true" ]]; then
+    if [[ -z "${ROBODOJO_RUN_ID:-}" ]]; then
+      export ROBODOJO_RUN_ID="$(date +%Y-%m-%d_%H-%M-%S)-$$"
+    fi
+    if [[ -z "${action_noise_dir}" ]]; then
+      action_noise_dir="${ROOT_DIR}/eval_result/action_noise/${ROBODOJO_RUN_ID}"
+    fi
+    export ROBODOJO_ACTION_NOISE_DIR="${action_noise_dir}"
+    export ROBODOJO_NOISE_VIZ_METHOD="${noise_viz_method}"
+    export ROBODOJO_NOISE_VIZ_K="${noise_viz_k}"
+  fi
 
   echo "[robodojo eval] policy_dir=${policy_dir}"
-  echo "[robodojo eval] task=${task} env_cfg=${env_cfg} eval_num=${EVAL_NUM:-default} num_envs=${num_envs:-config} max_steps=${max_steps:-task-default} layout_shard=${layout_shard:-all} save_video=${save_video} rollout_dir=${rollout_dir:-disabled}"
+  echo "[robodojo eval] task=${task} env_cfg=${env_cfg} eval_num=${EVAL_NUM:-default} num_envs=${num_envs:-config} max_steps=${max_steps:-task-default} layout_shard=${layout_shard:-all} layout_offset=${layout_offset} save_video=${save_video} rollout_dir=${rollout_dir:-disabled} action_noise_dir=${action_noise_dir:-disabled}"
 
   if [[ "${dry_run}" == "true" ]]; then
     printf '[robodojo eval] dry-run: bash %q' "${ROOT_DIR}/scripts/internal/run_policy_eval.sh"
@@ -289,6 +346,9 @@ EOF
   end_sec="$(date +%s)"
   elapsed_sec=$((end_sec - start_sec))
   echo "[robodojo eval] wall_clock=${elapsed_sec}s"
+  if [[ "${action_noise_viz}" == "true" && "${ROBODOJO_ACTION_NOISE_DEFER_PLOT:-0}" != "1" ]]; then
+    plot_action_noise "${action_noise_dir}" "${noise_viz_method}" "${noise_viz_k}" "${eval_env}"
+  fi
 }
 
 run_server() {
@@ -429,6 +489,10 @@ run_client() {
   local dimensions=""
   local limit=""
   local dry_run="false"
+  local action_noise_viz="false"
+  local action_noise_dir="${ROBODOJO_ACTION_NOISE_DIR:-}"
+  local noise_viz_method="${ROBODOJO_NOISE_VIZ_METHOD:-umap}"
+  local noise_viz_k="${ROBODOJO_NOISE_VIZ_K:-5}"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -457,6 +521,10 @@ run_client() {
         ;;
       --all) shift ;;
       --limit) need_value "$@"; limit="$2"; shift 2 ;;
+      --action-noise-viz) action_noise_viz="true"; shift ;;
+      --noise-viz-dir) need_value "$@"; action_noise_dir="$(abs_path "$2")"; action_noise_viz="true"; shift 2 ;;
+      --noise-viz-method) need_value "$@"; noise_viz_method="$2"; action_noise_viz="true"; shift 2 ;;
+      --noise-viz-k) need_value "$@"; noise_viz_k="$2"; action_noise_viz="true"; shift 2 ;;
       --dry-run) dry_run="true"; shift ;;
       -h|--help)
         cat <<'EOF'
@@ -496,6 +564,10 @@ Common options:
   --tasks-file PATH      Batch mode task subset file
   --dimension NAMES      Batch mode capability dimensions
   --limit NUM            Batch mode task limit after filtering
+  --action-noise-viz     Record policy initial noise and generate low-dimensional plots
+  --noise-viz-dir PATH   Shared raw/plot output root
+  --noise-viz-method NAME  Reduction method: umap (default) or tsne
+  --noise-viz-k NUM      Highlighted points per selected rollout (default: 5)
   --dry-run              Print the resolved eval_policy.sh command without running it
 EOF
         return 0
@@ -516,6 +588,14 @@ EOF
 
   if [[ -n "${max_steps}" && ! "${max_steps}" =~ ^[1-9][0-9]*$ ]]; then
     echo "[robodojo client] --max-steps must be a positive integer" >&2
+    exit 2
+  fi
+  if [[ "${noise_viz_method}" != "umap" && "${noise_viz_method}" != "tsne" ]]; then
+    echo "[robodojo client] --noise-viz-method must be umap or tsne" >&2
+    exit 2
+  fi
+  if [[ ! "${noise_viz_k}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "[robodojo client] --noise-viz-k must be a positive integer" >&2
     exit 2
   fi
 
@@ -581,6 +661,16 @@ EOF
     if [[ -n "${max_steps}" ]]; then
       batch_args+=(--max-steps "${max_steps}")
     fi
+    if [[ "${action_noise_viz}" == "true" ]]; then
+      batch_args+=(
+        --action-noise-viz
+        --noise-viz-method "${noise_viz_method}"
+        --noise-viz-k "${noise_viz_k}"
+      )
+      if [[ -n "${action_noise_dir}" ]]; then
+        batch_args+=(--noise-viz-dir "${action_noise_dir}")
+      fi
+    fi
     if [[ "${dry_run}" == "true" ]]; then
       batch_args+=(--dry-run)
     fi
@@ -606,6 +696,15 @@ EOF
     export ROBODOJO_MAX_STEPS="${max_steps}"
   else
     unset ROBODOJO_MAX_STEPS 2>/dev/null || true
+  fi
+  if [[ "${action_noise_viz}" == "true" ]]; then
+    if [[ -z "${ROBODOJO_RUN_ID:-}" ]]; then
+      export ROBODOJO_RUN_ID="$(date +%Y-%m-%d_%H-%M-%S)-$$"
+    fi
+    if [[ -z "${action_noise_dir}" ]]; then
+      action_noise_dir="${ROOT_DIR}/eval_result/action_noise/${ROBODOJO_RUN_ID}"
+    fi
+    export ROBODOJO_ACTION_NOISE_DIR="${action_noise_dir}"
   fi
 
   local client_args=(
@@ -645,6 +744,9 @@ EOF
   fi
 
   bash "${ROOT_DIR}/scripts/eval_policy.sh" "${client_args[@]}"
+  if [[ "${action_noise_viz}" == "true" && "${ROBODOJO_ACTION_NOISE_DEFER_PLOT:-0}" != "1" ]]; then
+    plot_action_noise "${action_noise_dir}" "${noise_viz_method}" "${noise_viz_k}"
+  fi
 }
 
 run_sweep() {
