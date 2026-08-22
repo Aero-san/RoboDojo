@@ -1,14 +1,32 @@
-huggingface_hub
-transforms3d
-ffmpeg
-open3d
-msgpack-numpy
-numpy==1.26.0
-scipy==1.15.3
+# Direct RoboDojo runtime dependencies. Isaac Sim, IsaacLab, CuRobo, and the
+# policy-specific environment are installed separately by scripts/install.sh.
+gymnasium>=1.0,<2
+huggingface_hub>=0.30
 matplotlib>=3.8
+msgpack>=1.0.8
+msgpack-numpy>=0.4.8
+numpy==1.26.0
+omegaconf>=2.3,<3
+open3d>=0.19
+opencv-python-headless==4.11.0.86
+pandas>=2.2
+pillow>=11
+pyarrow>=18
+pydantic>=2.5
+PyYAML>=6
+rtree>=1.3
 scikit-learn==1.6.1
+scipy==1.15.3
+shapely>=2.0
+tqdm>=4.66
+transforms3d>=0.4.2
 umap-learn==0.5.7
+websockets==12.0
+
+# NumPy 1.26-compatible JIT stack used by UMAP and project utilities.
 numba==0.59.1
 llvmlite==0.42.0
+
+# Development and repository validation.
 ruff>=0.11.7
 pre-commit>=4.2.0

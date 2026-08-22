@@ -119,25 +119,15 @@ setup_conda() {
 setup_base_deps() {
   info "[2/7] Installing base pip dependencies..."
   pip_install -r "$CURRENT_DIR/scripts/requirements.txt"
-  pip_install \
-    opencv-python-headless==4.11.0.86 \
-    pillow \
-    matplotlib \
-    "scipy==1.15.3" \
-    "scikit-learn==1.6.1" \
-    "umap-learn==0.5.7" \
-    "numba==0.59.1" \
-    "llvmlite==0.42.0"
-  pip_install numpy==1.26.0
 }
 setup_submodules() {
   cd "$CURRENT_DIR" || exit 1
   local subs=(third_party/IsaacLab third_party/curobo XPolicyLab)
-  info "[3/7] Syncing and updating submodules from remote..."
+  info "[3/7] Syncing submodules to the commits pinned by RoboDojo..."
   git submodule sync "${subs[@]}"
   for sub in "${subs[@]}"; do
-    info "    Updating ${sub} from remote..."
-    git submodule update --init --remote --progress "$sub" || {
+    info "    Restoring pinned submodule commit for ${sub}..."
+    git submodule update --init --progress "$sub" || {
       [ "$sub" = "XPolicyLab" ] && error "Failed to clone XPolicyLab. Ensure HTTPS auth (e.g. gh auth login)."
       error "Failed to update $sub."
     }
