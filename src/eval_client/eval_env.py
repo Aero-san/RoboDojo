@@ -141,7 +141,7 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             self.fail_nums = 0
             self.total_score = 0
 
-            self.abandoned_seeds: set[int] = set()
+            self.abandoned_episode_seeds: set[int] = set()
             self.current_env_seed_map: dict[int, int] = {}
             self.eval_result = {
                 "success_rate": 0.0,
@@ -156,8 +156,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             self.scene_manager.layout_manager.replay = True
             self.seed_manager = SeedManager(config.eval_cfg)
 
-            completed_layout_ids: list[int] = []
-            abandoned_layout_ids: list[int] = []
+            completed_episode_seeds: list[int] = []
+            abandoned_episode_seeds: list[int] = []
             if resume_state is not None:
                 self.success_nums = int(resume_state.get("success_nums", 0))
                 self.fail_nums = int(resume_state.get("fail_nums", 0))
@@ -172,11 +172,15 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                     except (TypeError, ValueError):
                         normalised_details[k] = v
                 self.eval_result["details"] = normalised_details
-                self.abandoned_seeds = set(int(s) for s in resume_state.get("abandoned_layout_ids", []))
-                completed_layout_ids = [
-                    int(v["layout_id"]) for v in normalised_details.values() if isinstance(v, dict) and "layout_id" in v
+                self.abandoned_episode_seeds = set(
+                    int(s) for s in resume_state.get("abandoned_episode_seeds", [])
+                )
+                completed_episode_seeds = [
+                    int(v["episode_seed"])
+                    for v in normalised_details.values()
+                    if isinstance(v, dict) and "episode_seed" in v
                 ]
-                abandoned_layout_ids = list(self.abandoned_seeds)
+                abandoned_episode_seeds = list(self.abandoned_episode_seeds)
                 eval_time = self.success_nums + self.fail_nums
                 if eval_time > 0:
                     self.eval_result["success_rate"] = self.success_nums / eval_time
@@ -185,12 +189,12 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 print(
                     f"[EvalEnv][resume] save_dir={self.save_dir} "
                     f"success={self.success_nums} fail={self.fail_nums} "
-                    f"completed={len(completed_layout_ids)} "
-                    f"abandoned={len(abandoned_layout_ids)}"
+                    f"completed={len(completed_episode_seeds)} "
+                    f"abandoned={len(abandoned_episode_seeds)}"
                 )
             self.seed_manager.init_eval(
-                completed_layout_ids=completed_layout_ids,
-                abandoned_layout_ids=abandoned_layout_ids,
+                completed_episode_seeds=completed_episode_seeds,
+                abandoned_episode_seeds=abandoned_episode_seeds,
             )
 
             self.deploy_cfg = config.deploy_cfg
@@ -745,14 +749,15 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             """
             manifest_path = self.resume_manifest_path()
             os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
-            completed_layout_ids = sorted(
+            completed_episode_seeds = sorted(
                 {
-                    int(v["layout_id"])
+                    int(v["episode_seed"])
                     for v in self.eval_result.get("details", {}).values()
-                    if isinstance(v, dict) and "layout_id" in v
+                    if isinstance(v, dict) and "episode_seed" in v
                 }
             )
             payload = {
+                "resume_schema_version": 2,
                 "run_id": self.run_id,
                 "save_dir": self.save_dir,
                 "task_name": self.task_name,
@@ -764,8 +769,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 "fail_nums": int(self.fail_nums),
                 "unstable_nums": int(self.unstable_nums),
                 "total_score": float(self.total_score),
-                "completed_layout_ids": completed_layout_ids,
-                "abandoned_layout_ids": sorted(int(s) for s in self.abandoned_seeds),
+                "completed_episode_seeds": completed_episode_seeds,
+                "abandoned_episode_seeds": sorted(int(s) for s in self.abandoned_episode_seeds),
                 "details": self.eval_result.get("details", {}),
                 "restart_count": int(restart_count),
             }
@@ -877,13 +882,11 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                     episode_score = process_scores[env_idx] / 100.0
                     self.total_score += episode_score
 
-                # seed_list was filtered by completed/abandoned ids on resume,
-                # so seed_list.index(seed) no longer yields the original
-                # layout id. Since init_eval populates seed_list as
-                # range(N_layouts), seed == layout_id by construction; use
-                # env_seeds[env_idx] directly.
+                episode_seed = int(self.env_seeds[env_idx])
+                layout_id = self.seed_manager.get_layout_id(episode_seed)
                 self.eval_result["details"][index] = {
-                    "layout_id": int(self.env_seeds[env_idx]),
+                    "episode_seed": episode_seed,
+                    "layout_id": layout_id,
                     "success": bool(self.success[env_idx]),
                     "score": episode_score,
                     "steps": int(self.take_action_cnt[env_idx]),
@@ -898,7 +901,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 episode_outcomes.append(
                     {
                         "env_idx": int(env_idx),
-                        "layout_id": int(self.env_seeds[env_idx]),
+                        "episode_seed": episode_seed,
+                        "layout_id": layout_id,
                         "success": bool(self.success[env_idx]),
                         "score": episode_score,
                         "steps": int(self.take_action_cnt[env_idx]),
@@ -910,7 +914,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                         index,
                         success=bool(self.success[env_idx]),
                         score=episode_score,
-                        layout_id=int(self.env_seeds[env_idx]),
+                        episode_seed=episode_seed,
+                        layout_id=layout_id,
                     )
                     self.eval_result["details"][index]["rollout_path"] = str(rollout_path)
                 if self.action_noise_recorder is not None:
@@ -918,7 +923,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                         env_idx,
                         index,
                         success=bool(self.success[env_idx]),
-                        layout_id=int(self.env_seeds[env_idx]),
+                        episode_seed=episode_seed,
+                        layout_id=layout_id,
                     )
                     if noise_path is not None:
                         self.eval_result["details"][index]["action_noise_path"] = str(noise_path)

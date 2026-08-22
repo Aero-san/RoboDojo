@@ -206,6 +206,7 @@ class RolloutRecorder:
         *,
         success: bool,
         score: float,
+        episode_seed: int,
         layout_id: int,
     ) -> Path:
         states = self._states.pop(env_idx, [])
@@ -241,6 +242,7 @@ class RolloutRecorder:
             "schema_version": 2,
             "run_id": self.run_id,
             "episode_index": int(episode_index),
+            "episode_seed": int(episode_seed),
             "layout_id": int(layout_id),
             "task": task,
             "success": bool(success),

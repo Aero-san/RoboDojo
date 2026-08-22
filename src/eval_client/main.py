@@ -203,11 +203,15 @@ def _load_resume_manifest(eval_cfg, run_id):
     except Exception as e:
         print(f"[main] failed to load resume manifest at {path}: {e}; ignoring.")
         return None
+    if data.get("resume_schema_version") != 2:
+        raise RuntimeError(
+            f"Resume manifest {path} predates unique episode seeds. Remove it and rerun the evaluation."
+        )
     print(
         f"[main] resuming from manifest {path} "
         f"(success={data.get('success_nums')} fail={data.get('fail_nums')} "
-        f"completed={len(data.get('completed_layout_ids') or [])} "
-        f"abandoned={len(data.get('abandoned_layout_ids') or [])} "
+        f"completed={len(data.get('completed_episode_seeds') or [])} "
+        f"abandoned={len(data.get('abandoned_episode_seeds') or [])} "
         f"restart_count={data.get('restart_count', 0)})"
     )
     return data
@@ -454,7 +458,7 @@ def main():
             # Abandon broken-env seeds, refill from the seed queue, and
             # retry this round iff there is at least one real seed left.
             bad_seeds = env.get_seeds_for_envs(bad_envs)
-            env.abandoned_seeds.update(bad_seeds)
+            env.abandoned_episode_seeds.update(bad_seeds)
 
             replacements = env.seed_manager.get_seeds(max_count=len(bad_envs)) or []
             bad_env_set = set(bad_envs)
@@ -490,8 +494,7 @@ def main():
 
         env.env_seeds = env.seed_manager.get_seeds(max_count=eval_num - eval_time)
         if env.env_seeds is None:
-            print("No more seeds to run, exiting.")
-            break
+            raise RuntimeError("SeedManager returned no episode seeds before eval_num was reached.")
 
         env.close()
 

@@ -1,5 +1,4 @@
 from collections.abc import Iterable, Mapping
-from copy import deepcopy
 import os
 from pathlib import Path
 import re
@@ -18,16 +17,19 @@ class SeedManager:
         self.task_name: str = str(self.config["task_name"])
         self.config_name: str = str(self.config["config_name"])
 
-        self.st_idx: int
-        self.ed_idx: int
         self.type: str
 
         self._current_batch_seeds: List[int] | None = None
+        self._layout_ids: List[int] = []
+        self._layout_id_set: set[int] = set()
+        self._layout_count = 0
+        self._excluded_episode_seeds: set[int] = set()
+        self._schedule_index = 0
 
     def init_eval(
         self,
-        completed_layout_ids: Iterable[int] | None = None,
-        abandoned_layout_ids: Iterable[int] | None = None,
+        completed_episode_seeds: Iterable[int] | None = None,
+        abandoned_episode_seeds: Iterable[int] | None = None,
     ):
         self.eval_seed = self.config.get("seed", 0)
         layout_dir = Path(ASSETS_PATH, "Eval_Layout", BENCHMARK, self.config_name, str(self.eval_seed))
@@ -72,63 +74,80 @@ class SeedManager:
                 f"[SeedManager] layout offset={layout_offset} "
                 f"remaining={len(all_layout_ids)}/{len(matching_files)}"
             )
-        excluded = set(int(s) for s in (completed_layout_ids or [])) | set(
-            int(s) for s in (abandoned_layout_ids or [])
-        )
-        if excluded:
-            self.seed_list: List[int] = [s for s in all_layout_ids if s not in excluded]
-            print(
-                f"[SeedManager] init_eval resume filter: excluded={len(excluded)} "
-                f"remaining={len(self.seed_list)}/{len(all_layout_ids)}"
+        if not all_layout_ids:
+            raise ValueError(
+                f"No evaluation layouts remain for task {self.task_name!r} after "
+                f"applying shard {shard_index}/{shard_count} and offset {layout_offset}."
             )
-        else:
-            self.seed_list = all_layout_ids
+        self._layout_ids = all_layout_ids
+        self._layout_id_set = set(all_layout_ids)
+        self._layout_count = len(matching_files)
+        self._excluded_episode_seeds = set(int(s) for s in (completed_episode_seeds or [])) | set(
+            int(s) for s in (abandoned_episode_seeds or [])
+        )
+        if self._excluded_episode_seeds:
+            print(
+                "[SeedManager] init_eval resume filter: "
+                f"excluded_episode_seeds={len(self._excluded_episode_seeds)}"
+            )
         if shard_count > 1:
             print(
                 f"[SeedManager] layout shard={shard_index}/{shard_count} "
-                f"layouts={len(self.seed_list)}/{len(matching_files)}"
+                f"layouts={len(self._layout_ids)}/{len(matching_files)}"
             )
-        self.st_idx = 0
-        self.ed_idx = len(self.seed_list)
+        requested_episodes = int(self.config.get("eval_num", len(self._layout_ids)))
+        if requested_episodes > len(self._layout_ids):
+            print(
+                f"[SeedManager] requested episodes={requested_episodes} exceed available "
+                f"layouts={len(self._layout_ids)}; layouts will repeat deterministically."
+            )
 
         self.type = "eval"
-        self.idx = 0
+        self._schedule_index = 0
         self._current_batch_seeds = None
 
     def get_seeds(self, max_count: int | None = None) -> List[int] | None:
         """Return a list of seeds for the next `reset()` call.
 
-        Returns None when enough episodes have been successfully collected.
+        Episode seeds are unbounded and unique. The caller owns the requested
+        episode count; saved layouts repeat deterministically when that count
+        exceeds the number of layout files.
         """
-
-        if self.idx >= self.ed_idx:
+        batch_size = self.num_envs if max_count is None else min(self.num_envs, max(0, int(max_count)))
+        if batch_size == 0:
             return None
-        if max_count is not None:
-            batch_size = min(self.num_envs, max(0, int(max_count)))
-            if batch_size == 0:
-                return None
-            batch = self.seed_list[self.idx : min(self.idx + batch_size, self.ed_idx)]
-            self.idx += len(batch)
-            self._current_batch_seeds = batch
-            return batch
-        if self.idx + self.num_envs > self.ed_idx:
-            batch = self.seed_list[self.idx : self.ed_idx]
-            result = deepcopy(batch)
-            for _ in range(self.num_envs - len(result)):
-                batch.append(self.seed_list[self.ed_idx - 1])  # pad with last seed if not enough remaining
-        else:
-            batch = self.seed_list[self.idx : self.idx + self.num_envs]
-        self.idx += self.num_envs
+        batch: List[int] = []
+        while len(batch) < batch_size:
+            cycle, position = divmod(self._schedule_index, len(self._layout_ids))
+            layout_id = self._layout_ids[position]
+            episode_seed = cycle * self._layout_count + layout_id
+            self._schedule_index += 1
+            if episode_seed not in self._excluded_episode_seeds:
+                batch.append(episode_seed)
         self._current_batch_seeds = batch
         return batch
 
+    def get_layout_id(self, episode_seed: int) -> int:
+        """Return the saved-layout id selected by a unique episode seed."""
+        layout_id = int(episode_seed) % self._layout_count
+        if layout_id not in self._layout_id_set:
+            raise ValueError(
+                f"Episode seed {episode_seed} maps to layout {layout_id}, which is outside "
+                "the configured layout shard."
+            )
+        return layout_id
+
     def get_seed_scene_info(self, seed: int) -> Dict[str, Any]:
-        seed_info = self.seed_info.get(seed)
+        layout_id = self.get_layout_id(seed)
+        seed_info = self.seed_info.get(layout_id)
         if seed_info is None:
-            raise ValueError(f"Seed {seed} not found in seed list.")
+            raise ValueError(f"Layout {layout_id} for episode seed {seed} was not found.")
         file_path = seed_info.get("scene_layout")
         if file_path is None or not os.path.exists(file_path):
-            raise ValueError(f"Scene layout file not found for seed {seed} at expected path {file_path}.")
+            raise ValueError(
+                f"Scene layout file not found for episode seed {seed}, layout {layout_id}, "
+                f"at expected path {file_path}."
+            )
         data = load_json(file_path)
         return data
 

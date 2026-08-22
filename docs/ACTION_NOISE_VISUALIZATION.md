@@ -25,6 +25,17 @@ Outputs are written below `eval_result/action_noise/<run-id>/` by default:
 - `plots/<method>_coordinates.csv`: coordinates and source metadata;
 - `plots/manifest.json`: reduction and highlighted-rollout metadata.
 
+For `benchmark`, every task writes into the same run root under
+`raw/<task>/`. Per-task eval processes defer reduction; after the full sweep,
+the benchmark process fits one shared UMAP/t-SNE embedding and writes one
+outcome plot and one task-ID plot containing all tasks.
+
+`--eval-num` is not limited by the number of saved layouts. Each rollout gets
+a unique `episode_seed`; when all available layouts have been used, their
+`layout_id` values repeat in deterministic order until the requested episode
+count is reached. Both identifiers are stored in result details, raw noise
+files, and the coordinates CSV so repeated layouts remain distinguishable.
+
 The selected successful and failed rollouts always come from the same task.
 Up to `k` inference points are selected at equal time intervals, connected,
 and labelled `S1...Sk` and `F1...Fk` in both plots. If the collected data has

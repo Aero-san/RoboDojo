@@ -34,10 +34,20 @@ CUDA_VISIBLE_DEVICES=2,3 bash scripts/robodojo.sh eval     --policy-dir XPolicyL
 
 
 # evaluate
-CUDA_VISIBLE_DEVICES=0,1,2,3 bash scripts/robodojo.sh eval     --policy-dir XPolicyLab/policy/Pi_05     --policy-env openpi     --ckpt RoboDojo-put_bottles_into_dustbin-arx_x5-joint-0   --env-cfg arx_x5     --action-type joint     --eval-num 50     --task put_bottles_into_dustbin \
+CUDA_VISIBLE_DEVICES=4,5 bash scripts/robodojo.sh eval     --policy-dir XPolicyLab/policy/Pi_05     --policy-env openpi     --ckpt RoboDojo-put_bottles_into_dustbin-arx_x5-joint-0   --env-cfg arx_x5     --action-type joint     --eval-num 1000     --task put_bottles_into_dustbin \
 --action-noise-viz \
 --noise-viz-method umap \
 --noise-viz-k 5
+
+CUDA_VISIBLE_DEVICES=6,7 bash scripts/robodojo.sh eval     --policy-dir XPolicyLab/policy/Pi_05     --policy-env openpi     --ckpt RoboDojo-fill_egg_holder-arx_x5-joint-0  --env-cfg arx_x5     --action-type joint     --eval-num 10     --task fill_egg_holder \
+--action-noise-viz \
+--noise-viz-method umap \
+--noise-viz-k 5
+
+bash scripts/robodojo.sh benchmark     --policy-dir XPolicyLab/policy/Pi_05     --policy-env openpi     --ckpt RoboDojo-put_bottles_into_dustbin-arx_x5-joint-0   --env-cfg arx_x5     --action-type joint     --eval-num 50   --gpu-ids 4,5,6,7 --policy-gpu-ids 4,6 --env-gpu-ids 5,7 --dimension long_horizon,open \
+--action-noise-viz \
+--noise-viz-method umap \
+--noise-viz-k 7
 
 
 OPENPI_PARAMETER_DTYPE=bfloat16 \

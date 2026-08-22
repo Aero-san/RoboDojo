@@ -33,6 +33,7 @@ class ActionNoiseRecorder:
         episode_index: int,
         *,
         success: bool,
+        episode_seed: int,
         layout_id: int,
     ) -> Path | None:
         noise = self._noise.pop(env_idx, [])
@@ -50,6 +51,7 @@ class ActionNoiseRecorder:
             task_id=np.asarray(self.task_name),
             run_id=np.asarray(self.run_id),
             episode_index=np.asarray(episode_index, dtype=np.int64),
+            episode_seed=np.asarray(episode_seed, dtype=np.int64),
             layout_id=np.asarray(layout_id, dtype=np.int64),
             success=np.asarray(success, dtype=np.bool_),
         )

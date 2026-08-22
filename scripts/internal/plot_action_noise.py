@@ -6,8 +6,19 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
+
+# UMAP imports Numba kernels with caching enabled. Conda environments can be
+# read-only to the eval process, so point both runtime caches at a writable
+# location before importing matplotlib or umap.
+_runtime_cache = Path(tempfile.gettempdir()) / f"robodojo-viz-{os.getuid()}"
+(_runtime_cache / "numba").mkdir(parents=True, exist_ok=True)
+(_runtime_cache / "matplotlib").mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("NUMBA_CACHE_DIR", str(_runtime_cache / "numba"))
+os.environ.setdefault("MPLCONFIGDIR", str(_runtime_cache / "matplotlib"))
 
 from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.pyplot as plt
@@ -41,6 +52,8 @@ def load_points(root: Path) -> tuple[np.ndarray, list[dict]]:
             task = str(data["task_id"].item())
             run_id = str(data["run_id"].item())
             episode_index = int(data["episode_index"].item())
+            episode_seed = int(data["episode_seed"].item())
+            layout_id = int(data["layout_id"].item())
             success = bool(data["success"].item())
         if noise.shape[0] != len(steps):
             raise ValueError(f"Noise/step count mismatch in {path}: {noise.shape[0]} != {len(steps)}")
@@ -59,6 +72,8 @@ def load_points(root: Path) -> tuple[np.ndarray, list[dict]]:
                     "task_id": task,
                     "rollout_id": rollout_id,
                     "episode_index": episode_index,
+                    "episode_seed": episode_seed,
+                    "layout_id": layout_id,
                     "point_index": point_index,
                     "rollout_step": int(step),
                     "success": success,
