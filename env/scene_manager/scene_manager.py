@@ -672,16 +672,7 @@ class SceneManager:
                 if hasattr(obj, "usd_prim_path") and is_prim_path_valid(obj.usd_prim_path):
                     delete_prim(obj.usd_prim_path)
             elif isinstance(obj, FluidObject):
-                if hasattr(obj, "usd_prim_path") and is_prim_path_valid(obj.usd_prim_path):
-                    delete_prim(obj.usd_prim_path)
-                # Only delete inline Fluid containers; keep config-imported containers
-                if (
-                    getattr(obj, "container_owned", False)
-                    and hasattr(obj, "container_prim_path")
-                    and obj.container_prim_path
-                    and is_prim_path_valid(obj.container_prim_path)
-                ):
-                    delete_prim(obj.container_prim_path)
+                obj.destroy()
             elif isinstance(obj, ArticulationObject):
                 obj.relocate_offscreen()
             else:
@@ -694,15 +685,7 @@ class SceneManager:
                 if hasattr(obj, "usd_prim_path") and is_prim_path_valid(obj.usd_prim_path):
                     delete_prim(obj.usd_prim_path)
             elif isinstance(obj, FluidObject):
-                if hasattr(obj, "usd_prim_path") and is_prim_path_valid(obj.usd_prim_path):
-                    delete_prim(obj.usd_prim_path)
-                if (
-                    getattr(obj, "container_owned", False)
-                    and hasattr(obj, "container_prim_path")
-                    and obj.container_prim_path
-                    and is_prim_path_valid(obj.container_prim_path)
-                ):
-                    delete_prim(obj.container_prim_path)
+                obj.destroy()
             elif isinstance(obj, ArticulationObject):
                 obj.relocate_offscreen()
             else:

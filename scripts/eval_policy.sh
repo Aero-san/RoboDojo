@@ -161,7 +161,7 @@ for ext in "${KIT_ENABLE_EXTS[@]}"; do
 done
 
 # Generated once per eval invocation. Carries the same identity through
-# os.execv inside main.py and bash-level retries below. Append $$ to
+# bash-level retries below. Append $$ to
 # defuse same-second collisions when the same task/config is launched
 # in parallel.
 if [[ -z "${ROBODOJO_RUN_ID:-}" ]]; then
@@ -169,7 +169,11 @@ if [[ -z "${ROBODOJO_RUN_ID:-}" ]]; then
 fi
 echo "[eval_policy] ROBODOJO_RUN_ID=${ROBODOJO_RUN_ID}"
 
-MAX_BASH_RETRIES="${ROBODOJO_MAX_BASH_RETRIES:-10}"
+# rc=99/134/139 means the simulator process is not safe to reuse.  Give a
+# transient CUDA/PhysX failure a few fresh-process attempts, then return a
+# failure to the caller so benchmark can record the task and continue (or
+# stop when --fail-fast is set). Override for a flaky machine if needed.
+MAX_BASH_RETRIES="${ROBODOJO_MAX_BASH_RETRIES:-3}"
 attempt=0
 while : ; do
   set +e
@@ -199,8 +203,8 @@ while : ; do
       exit 0
       ;;
     99|134|139)
-      # 99  - clean fatal-restart from main.py (in-process cap reached)
-      # 134 - SIGABRT (PhysX C++ aborted before main.py could re-exec)
+      # 99  - fatal PhysX/CUDA error; main.py requested a fresh process
+      # 134 - SIGABRT (PhysX C++ aborted before Python could exit cleanly)
       # 139 - SIGSEGV (CUDA driver segfault)
       attempt=$((attempt + 1))
       if [[ "$attempt" -ge "$MAX_BASH_RETRIES" ]]; then

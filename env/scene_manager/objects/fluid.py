@@ -243,6 +243,25 @@ class FluidObject:
     def apply_saved_pose(self):
         self.set_particle_positions(self.init_position)
 
+    def destroy(self):
+        """Remove the fluid prim and its dedicated PhysX particle system.
+
+        Fluid instances receive a fresh runtime name after a scene reload.
+        The particle system lives outside ``usd_prim_path`` under
+        ``/Particle_Attribute`` and therefore is not removed when the fluid
+        prim alone is deleted.  Leaving it behind accumulates particle
+        systems across evaluation episodes and eventually breaks GPU PhysX
+        particle kernels.
+        """
+        prim_paths = [self.usd_prim_path, self.particle_system_path]
+        if getattr(self, "container_owned", False):
+            prim_paths.append(getattr(self, "container_prim_path", None))
+        for prim_path in prim_paths:
+            if prim_path and is_prim_path_valid(prim_path):
+                delete_prim(prim_path)
+        self.point_instancer = None
+        self.particle_system = None
+
     def get_particle_positions(self):
         """
         Get current positions of all fluid particles.

@@ -7,8 +7,6 @@ import sys
 
 from isaaclab.app import AppLauncher
 
-MAX_INPROC_RESTARTS = 3
-
 parser = argparse.ArgumentParser()
 parser.add_argument("--task_name", type=str)
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to spawn.")
@@ -117,25 +115,20 @@ def _patch_isaac_property_window_race():
 
 
 def _physx_monitor_needed(task_name) -> bool:
-    """Enable the PhysX log monitor only for tasks whose Config declares a
-    non-empty `Articulation` section (those bodies trigger the PhysX
-    "Invalid PhysX transform" / CUDA failures we recover from). Read with a
-    lightweight yaml load before AppLauncher; any failure falls back to
-    enabled (fail-safe).
-    """
+    """Enable monitoring for tasks that can exercise GPU PhysX failure paths."""
     cfg_path = task_registry.task_config_path(os.path.join(ROOT_DIR, "task", BENCHMARK, "config"), task_name)
     try:
         import yaml
 
         with open(cfg_path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
-        return bool(cfg.get("Articulation"))
+        return bool(cfg.get("Articulation") or cfg.get("Fluid"))
     except Exception:
         return True
 
 
-# Fix the run id for this entire eval invocation (across all in-process
-# os.execv self-restarts and bash-level retries). When eval_policy.sh
+# Fix the run id for this entire eval invocation (across all shell-level
+# retries). When eval_policy.sh
 # launches us it exports ROBODOJO_RUN_ID up-front; if a developer runs
 # main.py directly we generate one here and propagate it via the
 # environment so subsequent execv calls see the same value.
@@ -243,33 +236,25 @@ def _close_model_client(env):
 
 
 def _restart_or_exit(env, simulation_app, fatal_msg):
-    """Persist progress and either os.execv-restart or sys.exit(99).
+    """Persist progress and leave recovery to the shell-level retry loop.
 
-    Bounded by ROBODOJO_FATAL_RESTART_COUNT env var so a persistent hardware
-    failure cannot put us in an infinite loop. The bash retry loop in
-    eval_policy.sh provides a second layer of bounded restarts.
+    A failed GPU PhysX context is process-global. Reusing it with ``os.execv``
+    or trying to close a wedged SimulationApp can retain the broken CUDA
+    context and hang. Exiting immediately lets ``eval_policy.sh`` start a
+    genuinely fresh process; its retry count is bounded.
     """
-    restart_count = int(os.environ.get("ROBODOJO_FATAL_RESTART_COUNT", "0")) + 1
+    restart_count = int(os.environ.get("ROBODOJO_FATAL_RESTART_COUNT", "0"))
     try:
         env.persist_resume_manifest(restart_count=restart_count)
     except Exception as e:
         print(f"[FATAL] persist_resume_manifest failed: {e}")
     print(
         f"[FATAL] PhysX kernel failure detected: {fatal_msg}; persisted manifest. "
-        f"In-process restart attempt {restart_count}/{MAX_INPROC_RESTARTS}."
+        "Exiting so the shell can start a fresh Isaac Sim process."
     )
-    try:
-        simulation_app.close()
-    except Exception:
-        pass
-    if restart_count <= MAX_INPROC_RESTARTS:
-        os.environ["ROBODOJO_FATAL_RESTART_COUNT"] = str(restart_count)
-        print(f"[FATAL] os.execv self-restart with run_id={os.environ.get('ROBODOJO_RUN_ID')}")
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os.execv(sys.executable, [sys.executable] + sys.argv)
-    print(f"[FATAL] in-process restart cap reached ({MAX_INPROC_RESTARTS}); exiting with rc=99 for bash-level retry.")
-    sys.exit(99)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(99)
 
 
 def _exit_for_shell_restart(env, fatal_msg):

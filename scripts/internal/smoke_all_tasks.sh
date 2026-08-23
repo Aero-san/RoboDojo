@@ -60,7 +60,8 @@ Options:
   --policy-gpu-ids IDS  Optional per-worker policy GPU ids. Defaults to --gpu-ids.
   --env-gpu-ids IDS     Optional per-worker env GPU ids. Defaults to --gpu-ids.
   --resume            Skip tasks already marked PASS in the summary file.
-  --fail-fast         Stop after the first failed task.
+  --fail-fast         Stop after the first failed task. Fatal GPU/PhysX exits
+                      always stop scheduling new tasks across all workers.
   --dry-run           Print eval commands and mark tasks DRY_RUN without launching eval.
   --all               Explicitly run all runnable tasks (default when --only is omitted).
   --limit NUM         Run only the first NUM tasks after filtering.
@@ -414,6 +415,24 @@ print(sum(status == "FAIL" for status in latest_by_task.values()))
 PY
 }
 
+validate_unique_gpu_workers() {
+  local role="$1"
+  shift
+  local gpu
+  local -A seen=()
+  for gpu in "$@"; do
+    if [[ -z "${gpu}" ]]; then
+      echo "[smoke_all_tasks] empty GPU id in ${role} worker list" >&2
+      exit 2
+    fi
+    if [[ -n "${seen[${gpu}]+present}" ]]; then
+      echo "[smoke_all_tasks] GPU ${gpu} is assigned to multiple ${role} workers; refusing concurrent scheduling on one GPU" >&2
+      exit 2
+    fi
+    seen["${gpu}"]=1
+  done
+}
+
 resolve_gpu_workers() {
   local resolved_policy_csv="${policy_gpu_ids}"
   local resolved_env_csv="${env_gpu_ids}"
@@ -442,6 +461,8 @@ resolve_gpu_workers() {
     echo "[smoke_all_tasks] policy/env gpu worker count mismatch" >&2
     exit 2
   fi
+  validate_unique_gpu_workers "policy" "${POLICY_GPU_WORKERS[@]}"
+  validate_unique_gpu_workers "environment" "${ENV_GPU_WORKERS[@]}"
 }
 
 resolve_client_endpoints() {
@@ -789,7 +810,7 @@ run_eval_for_task() {
   local task_run_id="${run_id}_${task}"
   local result_path="${ROOT_DIR}/eval_result/RoboDojo/${task}/${policy_name}/${env_cfg}/${seed}_ckpt_name=${ckpt},action_type=${action_type}/${task_run_id}/_result.json"
   local log_path="${log_dir}/${task}.log"
-  local rc elapsed eval_time message start_sec end_sec
+  local rc elapsed eval_time message start_sec end_sec fatal_exit="false"
 
   if [[ "${execution_mode}" == "eval" ]]; then
     echo "[smoke_all_tasks] RUN ${task} (policy_gpu=${task_policy_gpu}, env_gpu=${task_env_gpu})"
@@ -877,7 +898,16 @@ run_eval_for_task() {
   if [[ -z "${message}" ]]; then
     message="exit=${rc}, eval_time=${eval_time}"
   fi
+  case "${rc}" in
+    99|134|139)
+      fatal_exit="true"
+      message="fatal simulator exit=${rc}; GPU worker is being stopped"
+      ;;
+  esac
   record_result_row "${target_tsv}" "FAIL" "${task}" "${rc}" "${eval_time}" "${elapsed}" "${result_path}" "${log_path}" "${message}"
+  if [[ "${fatal_exit}" == "true" ]]; then
+    return 99
+  fi
   return 1
 }
 
@@ -923,15 +953,26 @@ run_parallel_group() {
   local fail_flag="$6"
   local task_host="${7:-}"
   local task_port="${8:-}"
-  local task failed="0"
+  local task failed="0" task_rc
 
   while IFS= read -r task || [[ -n "${task}" ]]; do
     [[ -n "${task}" ]] || continue
-    if [[ "${fail_fast}" == "true" && -f "${fail_flag}" ]]; then
+    # A fail flag is normally used only for --fail-fast.  A fatal simulator
+    # error also creates it unconditionally, which prevents every worker from
+    # scheduling another task after a GPU/driver failure is observed.
+    if [[ -f "${fail_flag}" ]]; then
       break
     fi
-    if ! run_eval_for_task "${task}" "${task_policy_gpu}" "${task_env_gpu}" "${target_tsv}" "${task_host}" "${task_port}"; then
+    if run_eval_for_task "${task}" "${task_policy_gpu}" "${task_env_gpu}" "${target_tsv}" "${task_host}" "${task_port}"; then
+      continue
+    else
+      task_rc=$?
       failed="1"
+      if [[ "${task_rc}" -eq 99 ]]; then
+        : > "${fail_flag}"
+        echo "[smoke_all_tasks] FATAL ${task}: worker=${worker_id} policy_gpu=${task_policy_gpu} env_gpu=${task_env_gpu} is quarantined; no more tasks will be scheduled by this benchmark" >&2
+        return 99
+      fi
       if [[ "${fail_fast}" == "true" ]]; then
         : > "${fail_flag}"
         break
@@ -945,7 +986,7 @@ run_parallel_group() {
 }
 
 run_sequential_tasks() {
-  local task
+  local task task_rc
   local task_host=""
   local task_port=""
   if [[ "${execution_mode}" == "client" ]]; then
@@ -958,8 +999,15 @@ run_sequential_tasks() {
     return $?
   fi
   for task in "${ACTIVE_TASKS[@]}"; do
-    if ! run_eval_for_task "${task}" "${policy_gpu}" "${env_gpu}" "${RESULTS_TSV}" "${task_host}" "${task_port}"; then
+    if run_eval_for_task "${task}" "${policy_gpu}" "${env_gpu}" "${RESULTS_TSV}" "${task_host}" "${task_port}"; then
+      :
+    else
+      task_rc=$?
       write_summaries
+      if [[ "${task_rc}" -eq 99 ]]; then
+        echo "[smoke_all_tasks] FATAL ${task}: policy_gpu=${policy_gpu} env_gpu=${env_gpu} is quarantined; stopping benchmark scheduling on this GPU" >&2
+        return 1
+      fi
       if [[ "${fail_fast}" == "true" ]]; then
         echo "[smoke_all_tasks] fail-fast stopping at ${task}" >&2
         return 1

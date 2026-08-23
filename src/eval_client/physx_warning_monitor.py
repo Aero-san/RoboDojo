@@ -173,11 +173,10 @@ def _split_log_segments(buf: bytes):
 class PhysXWarningMonitor:
     # Pattern matched against every captured stdout/stderr line.
     PATTERN = re.compile(rb"Invalid PhysX transform detected for /World/envs/env_(\d+)/")
-    # Fatal CUDA / GPU solver kernel failures. Covers the entire family of
-    # "GPU <kernel> fail to launch kernel!!" messages emitted right before
-    # PhysX gives up and aborts the process. Anchored on the trailing
-    # "fail to launch kernel" so it does not match unrelated lines.
-    FATAL_PATTERN = re.compile(rb"fail to launch kernel")
+    # Fatal CUDA / GPU solver kernel failures. Covers both forms emitted by
+    # PhysX, including particle kernels that end in "fail to launch!!" and
+    # solver kernels that end in "fail to launch kernel!!".
+    FATAL_PATTERN = re.compile(rb"fail to launch")
     # PhysX UI reports this after the simulation has already been stopped.
     # Reusing the current Kit process is not useful; main.py exits with rc=99
     # so eval_policy.sh can start a fresh process.
@@ -185,7 +184,7 @@ class PhysXWarningMonitor:
     # A CUDA error 700 kills the PhysX CUDA context outright. Do not wait for
     # the main thread to return to Python: it may be wedged in a C++ call.
     # The watchdog exits rc=99 immediately so eval_policy.sh starts a wholly
-    # fresh process instead of main.py doing an os.execv self-restart.
+    # fresh process instead of trying to reuse the damaged CUDA context.
     IMMEDIATE_SHELL_RESTART_PATTERN = re.compile(
         rb"PhysX Internal CUDA error\. Simulation cannot continue! Error code 700!"
     )
@@ -202,14 +201,15 @@ class PhysXWarningMonitor:
     STALE_KIT_MS_MARGIN: int = 1000
 
     # Once a fatal kernel failure is detected, main.py is expected to surface
-    # PhysXFatalError and os.execv-restart. But a dead CUDA context can wedge
+    # PhysXFatalError and leave through the shell-level restart path. But a
+    # dead CUDA context can wedge
     # the main thread inside a C++ PhysX call (env.close()/reset/step) so it
     # never returns to Python to run that handler, and PhysX may stop the sim
     # without raising SIGABRT -> the process then hangs forever with no
     # restart. The fatal watchdog force-exits with rc=99 (which eval_policy.sh
     # restarts) if the process is still alive this long after the fatal was
     # first observed. Override via ROBODOJO_FATAL_FORCE_EXIT_GRACE_S.
-    FATAL_FORCE_EXIT_GRACE_S: float = 45.0
+    FATAL_FORCE_EXIT_GRACE_S: float = 15.0
 
     # Echo/mirror throttling: collapse repeated noisy log lines (e.g. the
     # per-substep "Invalid PhysX transform" storms and the CUDA error-700
@@ -307,7 +307,7 @@ class PhysXWarningMonitor:
             if m is not None:
                 self._record_or_drop_warning(int(m.group(1)), self._parse_kit_ms(line))
         if (
-            b"fail to launch kernel" in line
+            b"fail to launch" in line
             or b"PhysX has reported too many errors" in line
             or b"PhysX Internal CUDA error" in line
         ):
@@ -363,7 +363,9 @@ class PhysXWarningMonitor:
         from any reader/tail thread.
         """
         requires_immediate_shell_restart = self.IMMEDIATE_SHELL_RESTART_PATTERN.search(line) is not None
-        requires_shell_restart = self.SHELL_RESTART_PATTERN.search(line) is not None or requires_immediate_shell_restart
+        requires_shell_restart = (
+            self.SHELL_RESTART_PATTERN.search(line) is not None or requires_immediate_shell_restart
+        )
         if self.FATAL_PATTERN.search(line) is None and not requires_shell_restart:
             return
         try:
@@ -842,7 +844,7 @@ class PhysXWarningMonitor:
         """Whether a fatal kernel failure has been observed in this process.
 
         Once true, stays true for the rest of the process lifetime. Only a
-        fresh process (e.g. via os.execv from main.py) can clear it.
+        fresh process can clear it.
         """
         return self._fatal_event.is_set()
 
@@ -852,7 +854,7 @@ class PhysXWarningMonitor:
             return self._fatal_message
 
     def requires_shell_restart(self) -> bool:
-        """Whether the current fatal condition should bypass os.execv."""
+        """Whether the current fatal condition requires shell restart."""
         with self._lock:
             return self._fatal_requires_shell_restart
 
@@ -877,15 +879,15 @@ class PhysXWarningMonitor:
 
         The reader sets ``_fatal_event`` as soon as it sees a "fail to launch
         kernel" line. main.py is expected to then raise PhysXFatalError and
-        os.execv-restart. But a dead CUDA context can wedge the main thread
+        leave through the shell-level restart path. But a dead CUDA context
+        can wedge the main thread
         inside a C++ PhysX call (env.close()/reset/step) so it never returns
         to Python to run that handler, and PhysX may stop the sim without
         raising SIGABRT -> the process hangs forever.
 
         This watchdog waits for the fatal event, gives the cooperative
-        restart path a grace period (os.execv replaces the process image and
-        kills this thread, so the happy path never reaches the force-exit),
-        and otherwise force-exits with rc=99 -- which eval_policy.sh's retry
+        restart path a grace period, and otherwise force-exits with rc=99 --
+        which eval_policy.sh's retry
         loop restarts into a fresh process. Progress is recovered from the
         resume manifest persisted at the end of each completed batch.
         """
@@ -906,17 +908,19 @@ class PhysXWarningMonitor:
         if self._shutdown:
             return
 
-        # CUDA error 700 explicitly requests an immediate shell-level restart;
-        # all other fatal errors retain the cooperative main.py grace period.
-        # Re-check the immediate flag while waiting because a regular fatal
-        # line may wake the watchdog shortly before the CUDA error-700 line.
+        # A stopped simulation explicitly requests an immediate shell-level
+        # restart. Re-check the flag while waiting because the reader may
+        # first observe a kernel launch failure and then the stop message.
         deadline = time.monotonic() + grace
         immediate_shell_restart = False
         while time.monotonic() < deadline:
             if self._shutdown:
                 return
             with self._lock:
-                immediate_shell_restart = self._fatal_requires_immediate_shell_restart
+                immediate_shell_restart = (
+                    self._fatal_requires_immediate_shell_restart
+                    or self._fatal_requires_shell_restart
+                )
             if immediate_shell_restart:
                 break
             time.sleep(0.5)
