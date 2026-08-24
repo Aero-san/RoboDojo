@@ -1,8 +1,8 @@
 XPolicyLab/policy/Pi_05/openpi/.venv/bin/python \
 scripts/posttrain/prepare_pi05_dataset.py \
 --dataset-root data/RoboDojo_lerobot_v21_video \
---repo-id RoboDojo-fill_egg_holder-arx_x5-joint \
---task fill_egg_holder \
+--repo-id RoboDojo-fill_pen_holder-arx_x5-joint \
+--task fill_pen_holder \
 --mode video
 
 
@@ -39,7 +39,7 @@ CUDA_VISIBLE_DEVICES=4,5 bash scripts/robodojo.sh eval     --policy-dir XPolicyL
 --noise-viz-method umap \
 --noise-viz-k 5
 
-CUDA_VISIBLE_DEVICES=6,7 bash scripts/robodojo.sh eval     --policy-dir XPolicyLab/policy/Pi_05     --policy-env openpi     --ckpt RoboDojo-fill_egg_holder-arx_x5-joint-0  --env-cfg arx_x5     --action-type joint     --eval-num 10     --task fill_egg_holder \
+CUDA_VISIBLE_DEVICES=6,7 bash scripts/robodojo.sh eval     --policy-dir XPolicyLab/policy/Pi_05     --policy-env openpi     --ckpt RoboDojo-fill_egg_holder-arx_x5-joint-0 --env-cfg arx_x5     --action-type joint     --eval-num 50     --task fill_egg_holder \
 --action-noise-viz \
 --noise-viz-method umap \
 --noise-viz-k 5
@@ -99,7 +99,6 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
 bash train.sh RoboDojo fill_pen_holder arx_x5 joint 0
 
 
-
-
-
 OPENPI_PARAMETER_DTYPE=float32 OPENPI_FINETUNE_MODE=full OPENPI_BATCH_SIZE=16 OPENPI_NUM_WORKERS=4 OPENPI_NUM_TRAIN_STEPS=120000 OPENPI_LEARNING_RATE=5e-6 OPENPI_WARMUP_STEPS=3000 OPENPI_DECAY_STEPS=120000 OPENPI_DECAY_LR=5e-7 OPENPI_WEIGHT_DECAY=1e-10 OPENPI_CLIP_GRADIENT_NORM=1.0 OPENPI_SAVE_INTERVAL=5000 OPENPI_LOG_INTERVAL=100 OPENPI_FSDP_DEVICES=4 OPENPI_WANDB_ENABLED=0 OPENPI_RESUME=1 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 OPENPI_SHARDING_STRATEGY=no_shard bash train.sh RoboDojo fill_egg_holder arx_x5 joint 0 4,5,6,7
+
+rsync -avh -P -e "ssh -p 2370 -i ~/.ssh/mecs.id" --info=progress2 --partial *tar.gz mingyang@36.103.234.242:~

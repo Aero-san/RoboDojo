@@ -97,3 +97,7 @@ ENV_GPU=1 \
 bash scripts/posttrain/run_pi05_recap.sh --task put_bottles_into_dustbin --initial-policy-checkpoint $PWD/XPolicyLab/policy/Pi_05/checkpoints/RoboDojo-put_bottles_into_dustbin-arx_x5-joint-0/11999
 
 recap 10000steps/9hrs
+
+
+
+

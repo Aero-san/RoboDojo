@@ -12,6 +12,7 @@ import dataclasses
 import importlib.util
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import sys
@@ -111,6 +112,109 @@ class PosttrainDataConfig:
         return data
 
 
+class _SourceBalancedDataset:
+    """Expose a deterministic virtual dataset with configured source proportions."""
+
+    def __init__(self, dataset, groups: dict[str, np.ndarray], weights: dict[str, float], seed: int):
+        self._dataset = dataset
+        active = {name: indices for name, indices in groups.items() if len(indices) and weights[name] > 0}
+        if set(active) != {"demo", "rollout"}:
+            raise ValueError(
+                "RECAP source balancing requires non-empty demo and rollout frame sets; "
+                f"found { {name: len(indices) for name, indices in groups.items()} }."
+            )
+        total_weight = sum(weights[name] for name in active)
+        total_frames = sum(len(indices) for indices in active.values())
+        allocations = {
+            "demo": max(1, round(total_frames * weights["demo"] / total_weight)),
+        }
+        allocations["rollout"] = total_frames - allocations["demo"]
+        if allocations["rollout"] < 1:
+            allocations["rollout"] = 1
+            allocations["demo"] = total_frames - 1
+
+        rng = np.random.default_rng(seed)
+        mapped: list[np.ndarray] = []
+        for name in ("demo", "rollout"):
+            source = groups[name]
+            count = allocations[name]
+            repetitions, remainder = divmod(count, len(source))
+            pieces = [rng.permutation(source) for _ in range(repetitions)]
+            if remainder:
+                pieces.append(rng.permutation(source)[:remainder])
+            mapped.append(np.concatenate(pieces) if pieces else np.empty(0, dtype=np.int64))
+        self._indices = np.concatenate(mapped)
+        rng.shuffle(self._indices)
+        self.report = {
+            "schema_version": 1,
+            "type": "recap_source_balanced_sampling",
+            "source_frames": {name: int(len(indices)) for name, indices in groups.items()},
+            "weights": weights,
+            "virtual_frames": {name: int(allocations[name]) for name in allocations},
+            "total_virtual_frames": int(len(self._indices)),
+            "seed": seed,
+        }
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+    def __getitem__(self, index):
+        return self._dataset[int(self._indices[index.__index__()])]
+
+
+def _install_source_balancing(
+    repo_id: str,
+    *,
+    demo_weight: float,
+    rollout_weight: float,
+    seed: int,
+) -> dict[str, object]:
+    """Patch the local OpenPI loader without modifying the XPolicyLab submodule."""
+    if demo_weight <= 0 or rollout_weight <= 0:
+        raise ValueError("RECAP demo and rollout sampling weights must both be positive.")
+    try:
+        from lerobot.datasets.lerobot_dataset import HF_LEROBOT_HOME
+    except ModuleNotFoundError:
+        from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME
+    import openpi.training.data_loader as data_loader
+
+    dataset_root = (Path(os.environ.get("HF_LEROBOT_HOME", HF_LEROBOT_HOME)) / repo_id).resolve()
+    manifest_path = dataset_root / "meta/recap_incremental.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"RECAP sampling manifest not found: {manifest_path}")
+    identities = json.loads(manifest_path.read_text(encoding="utf-8")).get("episodes", [])
+    groups: dict[str, list[int]] = {"demo": [], "rollout": []}
+    offset = 0
+    for episode in identities:
+        length = int(episode["length"])
+        kind = str(episode.get("source_kind", ""))
+        if kind in groups:
+            groups[kind].extend(range(offset, offset + length))
+        offset += length
+    group_arrays = {name: np.asarray(indices, dtype=np.int64) for name, indices in groups.items()}
+    weights = {"demo": float(demo_weight), "rollout": float(rollout_weight)}
+    original = data_loader.create_torch_dataset
+    report_holder: dict[str, object] = {}
+
+    def create_balanced_dataset(data_config, action_horizon, model_config):
+        dataset = original(data_config, action_horizon, model_config)
+        if len(dataset) != offset:
+            raise ValueError(
+                f"RECAP sampling manifest describes {offset} frames, OpenPI loaded {len(dataset)}."
+            )
+        balanced = _SourceBalancedDataset(dataset, group_arrays, weights, seed)
+        report_holder.update(balanced.report)
+        logging.info("RECAP source-balanced sampling: %s", balanced.report)
+        return balanced
+
+    data_loader.create_torch_dataset = create_balanced_dataset
+    # Populate a report before OpenPI constructs the data loader so callers can
+    # still persist the intended allocation if training fails during startup.
+    preview = _SourceBalancedDataset(range(offset), group_arrays, weights, seed)
+    report_holder.update(preview.report)
+    return report_holder
+
+
 def _load_train_module(openpi_root: Path) -> ModuleType:
     train_path = openpi_root / "scripts" / "train.py"
     if not train_path.exists():
@@ -206,6 +310,8 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recap", action="store_true")
     parser.add_argument("--recap-unconditional-prob", type=float, default=0.1)
     parser.add_argument("--recap-guidance-scale", type=float, default=1.0)
+    parser.add_argument("--recap-demo-weight", type=float, default=1.0)
+    parser.add_argument("--recap-rollout-weight", type=float, default=1.0)
     parser.add_argument("--env-cfg-type", default="")
     parser.add_argument("--action-type", choices=("joint", "ee"), default="joint")
     parser.add_argument("--norm-stats-dir", default="")
@@ -347,6 +453,10 @@ def main(args: argparse.Namespace) -> None:
         updates["num_train_steps"] = args.num_train_steps
     if args.save_interval > 0:
         updates["save_interval"] = args.save_interval
+        if args.recap:
+            # Orbax otherwise retains only the latest checkpoint. RECAP needs
+            # every evaluation interval checkpoint for the promotion gate.
+            updates["keep_period"] = args.save_interval
     if args.log_interval > 0:
         updates["log_interval"] = args.log_interval
     if args.disable_wandb:
@@ -379,6 +489,14 @@ def main(args: argparse.Namespace) -> None:
         args.repo_id,
         args.checkpoint_dir,
     )
+    sampling_report = None
+    if args.recap:
+        sampling_report = _install_source_balancing(
+            args.repo_id,
+            demo_weight=args.recap_demo_weight,
+            rollout_weight=args.recap_rollout_weight,
+            seed=args.seed,
+        )
     train_module.main(config)
     _write_checkpoint_model_metadata(
         config.checkpoint_dir,
@@ -388,6 +506,10 @@ def main(args: argparse.Namespace) -> None:
         recap_unconditional_prob=args.recap_unconditional_prob,
         recap_guidance_scale=args.recap_guidance_scale,
     )
+    if sampling_report is not None:
+        (Path(args.checkpoint_dir) / "recap_source_sampling.json").write_text(
+            json.dumps(sampling_report, indent=2) + "\n", encoding="utf-8"
+        )
 
 
 if __name__ == "__main__":
