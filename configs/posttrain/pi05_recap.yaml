@@ -1,14 +1,14 @@
 # Flat YAML keys intentionally match the established environment controls.
 # Precedence: command line > environment > this file > launcher defaults.
-TASK_NAME: stack_bowls
-DEMO_ROOT: /absolute/path/to/RoboDojo_lerobot_v21_video
-INITIAL_POLICY_CHECKPOINT: /absolute/path/to/pi05_sft/59999
+TASK_NAME: put_bottles_into_dustbin
+DEMO_ROOT: /share/mingyang/RoboDojo/outputs/wcm/robodojo_pi05
+INITIAL_POLICY_CHECKPOINT: /share/mingyang/RoboDojo/XPolicyLab/policy/Pi_05/checkpoints/RoboDojo-put_bottles_into_dustbin-arx_x5-joint-0/11999
 INITIAL_WCM_CHECKPOINT: null
 OUTPUT_ROOT: outputs/recap
 
 RECAP_ITERATIONS: 3
-RECAP_ROLLOUT_EPISODES: 100
-RECAP_MIN_ROLLOUT_EPISODES: 50
+RECAP_ROLLOUT_EPISODES: 50
+RECAP_MIN_ROLLOUT_EPISODES: 20
 RECAP_MIN_SUCCESS_EPISODES: 5
 RECAP_MIN_FAILURE_EPISODES: 5
 RECAP_ROLLOUT_LAYOUT_SEED: 0
@@ -45,20 +45,6 @@ ENV_CFG_TYPE: arx_x5
 ACTION_TYPE: joint
 TRAIN_GPUS: 0,1,2,3
 WCM_TRAIN_GPUS: 0,1,2,3
-OPENPI_FSDP_DEVICES: 2
+OPENPI_FSDP_DEVICES: 4
 POLICY_GPU: 0
 ENV_GPU: 1
-
-# Optional two-server pipeline. Leave RECAP_REMOTE_ROLLOUT_HOST unset to keep
-# rollout local. The SSH alias must be non-interactive, and both hosts need
-# GNU tar + zstd. RECAP_REMOTE_WORK_ROOT persists completed remote episodes so
-# --resume can continue without recollecting them.
-RECAP_REMOTE_ROLLOUT_HOST: null  # set to your SSH alias, e.g. h20-to-4090
-RECAP_REMOTE_REPO_ROOT: /absolute/path/on/4090/RoboDojo
-RECAP_REMOTE_WORK_ROOT: /absolute/path/on/4090/recap_remote_jobs
-RECAP_REMOTE_POLICY_GPU: 0
-RECAP_REMOTE_ENV_GPU: 0
-RECAP_REMOTE_VALUE_VIDEO_GPU: 0
-# Held-out baseline/candidate evaluations are rollout jobs too. Disable this
-# only when transferring every intermediate checkpoint is slower than local eval.
-RECAP_REMOTE_POLICY_EVAL: true
