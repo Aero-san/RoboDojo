@@ -3,6 +3,10 @@ from typing import List
 
 import numpy as np
 
+
+class CameraObservationError(BaseException):
+    """Fatal renderer failure that must bypass per-episode retry handling."""
+
 from env.description_manager.desc_manager import DescManager
 
 
@@ -115,7 +119,9 @@ class ObsManager:
                 stack_trace = traceback.format_exc()
                 print(stack_trace)
                 print("[get_obs] Camera observation capture failed.")
-                raise e
+                raise CameraObservationError(
+                    "Camera observation capture failed; check the Isaac Sim GPU and renderer logs above."
+                ) from e
 
             for env_idx in env_idx_list:
                 for cam_data in obs[env_idx]["vision"].values():
