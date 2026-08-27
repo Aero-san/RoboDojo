@@ -4,8 +4,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-source "${SCRIPT_DIR}/gpu_reservation.sh"
-install_gpu_reservation_exit_trap
 WCM_ROOT="${ROOT_DIR}/external_dependencies/WCM"
 cd "${ROOT_DIR}"
 PYTHON_BIN="${PYTHON_BIN:-${WCM_ROOT}/.venv/bin/python}"
@@ -116,7 +114,6 @@ run_wcm() {
   local args
   if [[ "${MODE}" == "train" ]]; then
     args=(train --config "${CONFIG}")
-    start_gpu_reservation "${CUDA_VISIBLE_DEVICES}" "${PYTHON_BIN}" "WCM dataset preparation"
   else
     [[ -f "${CHECKPOINT}" ]] || {
       echo "WCM checkpoint not found: ${CHECKPOINT}" >&2
@@ -142,7 +139,6 @@ run_wcm() {
     "${PYTHON_BIN}" -m torch.distributed.run --standalone \
       --nproc_per_node="${WCM_WORLD_SIZE}" "${SCRIPT_DIR}/run_wcm.py" "${args[@]}"
   fi
-  stop_gpu_reservation
 }
 
 case "${MODE}" in

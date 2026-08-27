@@ -1,64 +1,153 @@
-# Flat YAML keys intentionally match the established environment controls.
-# Precedence: command line > environment > this file > launcher defaults.
-TASK_NAME: stack_bowls
-DEMO_ROOT: /absolute/path/to/RoboDojo_lerobot_v21_video
-INITIAL_POLICY_CHECKPOINT: /absolute/path/to/pi05_sft/59999
-INITIAL_WCM_CHECKPOINT: null
-OUTPUT_ROOT: outputs/recap
+# Unified Pi0.5 RECAP configuration. Unknown fields are rejected.
+# Run with: bash scripts/posttrain/run_pi05_recap.sh --config <this-file>
+schema_version: 1
 
-RECAP_ITERATIONS: 3
-RECAP_ROLLOUT_EPISODES: 100
-RECAP_MIN_ROLLOUT_EPISODES: 50
-RECAP_MIN_SUCCESS_EPISODES: 5
-RECAP_MIN_FAILURE_EPISODES: 5
-RECAP_ROLLOUT_LAYOUT_SEED: 0
-RECAP_MAX_DEMO_EPISODES: 100
-RECAP_WCM_REPLAY_EPISODES: 20
-RECAP_LOOKAHEAD: 10
-RECAP_GAMMA: 1.0
-RECAP_POSITIVE_FRACTION: 0.3
-RECAP_UNCONDITIONAL_PROB: 0.1
-RECAP_GUIDANCE_SCALE: 1.0
-RECAP_DEMO_SAMPLING_WEIGHT: 1.0
-RECAP_ROLLOUT_SAMPLING_WEIGHT: 1.0
-RECAP_WCM_EPOCHS: 5
-WCM_FAILURE_PENALTY: 300
+run:
+  task: stack_bowls
+  output_root: outputs/recap
+  iterations: 3
+  resume: false
+  # Explicit recovery mode: trust structurally complete existing stages even
+  # when their saved fingerprint differs from the current YAML.
+  reuse_completed_artifacts: false
+  seed: 0
 
-OPENPI_NUM_TRAIN_STEPS: 3000
-OPENPI_BATCH_SIZE: 64
-OPENPI_LEARNING_RATE: 1.0e-5
-OPENPI_WARMUP_STEPS: 500
-OPENPI_WEIGHT_DECAY: 1.0e-10
-OPENPI_CLIP_GRADIENT_NORM: 1.0
-OPENPI_WANDB_ENABLED: false
+environment:
+  env_cfg: arx_x5
+  action_type: joint
+  policy_env: openpi
+  eval_env: RoboDojo
 
-# Keep/evaluate checkpoints at 1000, 2000, and the final step 2999.
-RECAP_POLICY_EVAL_INTERVAL: 1000
-RECAP_POLICY_EVAL_EPISODES: 20
-RECAP_POLICY_EVAL_LAYOUT_SEED: 1
-RECAP_POLICY_EVAL_LAYOUT_OFFSET: 0
-RECAP_PROMOTION_MAX_SUCCESS_DROP: 0.10
-RECAP_PROMOTION_MIN_SUCCESS_RATE: 0.0
-RECAP_STOP_ON_REJECTION: true
+checkpoints:
+  initial_policy: /absolute/path/to/pi05_sft/59999
+  initial_wcm: null
 
-ENV_CFG_TYPE: arx_x5
-ACTION_TYPE: joint
-TRAIN_GPUS: 0,1,2,3
-WCM_TRAIN_GPUS: 0,1,2,3
-OPENPI_FSDP_DEVICES: 2
-POLICY_GPU: 0
-ENV_GPU: 1
+data:
+  demo_root: /absolute/path/to/RoboDojo_lerobot_v21_video
+  max_demo_episodes: 100
+  mode: video
+  norm_asset_id: null
 
-# Optional two-server pipeline. Leave RECAP_REMOTE_ROLLOUT_HOST unset to keep
-# rollout local. The SSH alias must be non-interactive, and both hosts need
-# GNU tar + zstd. RECAP_REMOTE_WORK_ROOT persists completed remote episodes so
-# --resume can continue without recollecting them.
-RECAP_REMOTE_ROLLOUT_HOST: null  # set to your SSH alias, e.g. h20-to-4090
-RECAP_REMOTE_REPO_ROOT: /absolute/path/on/4090/RoboDojo
-RECAP_REMOTE_WORK_ROOT: /absolute/path/on/4090/recap_remote_jobs
-RECAP_REMOTE_POLICY_GPU: 0
-RECAP_REMOTE_ENV_GPU: 0
-RECAP_REMOTE_VALUE_VIDEO_GPU: 0
-# Held-out baseline/candidate evaluations are rollout jobs too. Disable this
-# only when transferring every intermediate checkpoint is slower than local eval.
-RECAP_REMOTE_POLICY_EVAL: true
+devices:
+  pi05_train: [0, 1, 2, 3]
+  wcm_train: [0, 1, 2, 3]
+  rollout_policy: 0
+  rollout_environment: 1
+  value_video: 0
+  reservation:
+    enabled: true
+    leave_free_mib: 2048
+    idle_used_max_mib: 64
+    remote_max_hold_seconds: 1800
+
+rollout:
+  episodes: 100
+  layout_seed: 0
+  minimum:
+    total: 50
+    successes: 5
+    failures: 5
+  remote:
+    enabled: false
+    host: null
+    repo_root: null
+    work_root: null
+    zstd: zstd
+    conda: conda
+    python: python
+    policy_gpu: 0
+    environment_gpu: 0
+    value_video_gpu: 0
+    policy_evaluation: false
+
+training:
+  # Explicit opt-in. Set host to `local` to execute on this machine, or to
+  # an SSH config alias/hostname to execute on another machine.
+  remote:
+    enabled: false
+    host: null
+    repo_root: null
+    work_root: null
+    zstd: zstd
+    conda: conda
+    python: python
+    pi_python: null
+    wcm_python: null
+    pi05_gpus: [0, 1]
+    wcm_gpus: [0, 1]
+    value_video_gpu: 0
+    render_value_video: true
+
+wcm:
+  train:
+    config: configs/wcm/robodojo_pi05.yaml
+    epochs: 5
+    replay_episodes: 20
+    per_device_batch_size: 16
+    num_workers: 8
+    precision: bf16
+    learning_rate: null
+    warmup_steps: null
+    video_decoder: pyav
+  inference:
+    batch_size: 8
+    num_workers: 2
+    device: cuda
+
+recap:
+  lookahead: 10
+  gamma: 1.0
+  failure_penalty: 300
+  positive_fraction: 0.3
+  unconditional_probability: 0.1
+  guidance_scale: 1.0
+  sampling:
+    demonstrations: 1.0
+    rollouts: 1.0
+
+pi05:
+  train_config: pi05_base_aloha_full_sim_arx-x5_seed_0
+  finetune_mode: action_expert_lora
+  steps: 3000
+  batch_size: 64
+  num_workers: 4
+  parameter_dtype: bfloat16
+  sharding_strategy: full_shard
+  fsdp_devices: 2
+  cpu_offload: false
+  ema_decay: 0.99
+  action_expert_variant: null
+  paligemma_variant: null
+  xla_memory_fraction: 0.9
+  wandb_enabled: true
+  log_interval: 100
+  optimizer:
+    learning_rate: 1.0e-5
+    warmup_steps: 500
+    decay_lr: null
+    weight_decay: 1.0e-10
+    clip_gradient_norm: 1.0
+
+evaluation:
+  interval: 1000
+  episodes: 20
+  # Reuse this iteration's pre-training-policy rollout for the baseline;
+  # candidate checkpoints still run on the rollout host.
+  reuse_rollout: true
+  layout_seed: 1
+  layout_offset: 0
+
+value_video:
+  episodes: 3
+  batch_size: 8
+  device: cuda
+  precision: bf16
+  backend: auto
+  speed: 1.0
+  y_min: -1.0
+  y_max: 1.0
+
+runtime:
+  pi_python: null
+  wcm_python: null
+  policy_dir: null

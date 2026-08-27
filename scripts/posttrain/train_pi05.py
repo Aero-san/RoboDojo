@@ -294,8 +294,16 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--paligemma-variant", default="")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--fsdp-devices", type=int, default=1)
+    parser.add_argument("--parameter-dtype", choices=("bfloat16", "float32"), default="bfloat16")
+    parser.add_argument(
+        "--sharding-strategy",
+        choices=("full_shard", "shard_grad_op", "no_shard"),
+        default="full_shard",
+    )
+    parser.add_argument("--cpu-offload", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--ema-decay", default="0.99")
     parser.add_argument("--batch-size", type=int, default=0)
-    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--num-workers", type=int)
     parser.add_argument("--num-train-steps", type=int, default=100)
     parser.add_argument("--save-interval", type=int, default=0)
     parser.add_argument("--log-interval", type=int, default=0)
@@ -359,6 +367,10 @@ def _write_checkpoint_model_metadata(
     recap: bool,
     recap_unconditional_prob: float,
     recap_guidance_scale: float,
+    parameter_dtype: str,
+    sharding_strategy: str,
+    cpu_offload: bool,
+    fsdp_devices: int,
 ) -> None:
     root = Path(checkpoint_dir).expanduser().resolve()
     candidates = [root]
@@ -376,6 +388,10 @@ def _write_checkpoint_model_metadata(
         "recap_inference_condition": "positive" if recap else None,
         "recap_unconditional_prob": recap_unconditional_prob if recap else None,
         "recap_guidance_scale": recap_guidance_scale if recap else None,
+        "parameter_dtype": parameter_dtype,
+        "sharding_strategy": sharding_strategy,
+        "cpu_offload": cpu_offload,
+        "fsdp_devices": fsdp_devices,
     }
     for candidate in candidates:
         if (candidate / "params").exists():
@@ -427,9 +443,19 @@ def main(args: argparse.Namespace) -> None:
         "checkpoint_dir_override": args.checkpoint_dir,
         "seed": args.seed,
         "fsdp_devices": args.fsdp_devices,
+        "parameter_dtype": args.parameter_dtype,
+        "sharding_strategy": args.sharding_strategy,
+        "cpu_offload": args.cpu_offload,
         "overwrite": not args.resume,
         "resume": args.resume,
     }
+    if args.ema_decay.lower() in {"none", "null"}:
+        updates["ema_decay"] = None
+    else:
+        ema_decay = float(args.ema_decay)
+        if not 0.0 <= ema_decay <= 1.0:
+            raise ValueError("--ema-decay must be in [0, 1] or 'none'.")
+        updates["ema_decay"] = ema_decay
     if args.init_checkpoint:
         if args.resume:
             raise ValueError("--init-checkpoint and --resume are mutually exclusive.")
@@ -447,7 +473,9 @@ def main(args: argparse.Namespace) -> None:
         updates["weight_loader"] = weight_loaders.CheckpointWeightLoader(str(checkpoint / "params"))
     if args.batch_size > 0:
         updates["batch_size"] = args.batch_size
-    if args.num_workers > 0:
+    if args.num_workers is not None:
+        if args.num_workers < 0:
+            raise ValueError("--num-workers cannot be negative.")
         updates["num_workers"] = args.num_workers
     if args.num_train_steps > 0:
         updates["num_train_steps"] = args.num_train_steps
@@ -455,7 +483,7 @@ def main(args: argparse.Namespace) -> None:
         updates["save_interval"] = args.save_interval
         if args.recap:
             # Orbax otherwise retains only the latest checkpoint. RECAP needs
-            # every evaluation interval checkpoint for the promotion gate.
+            # every evaluation interval checkpoint for metric tracking.
             updates["keep_period"] = args.save_interval
     if args.log_interval > 0:
         updates["log_interval"] = args.log_interval
@@ -505,6 +533,10 @@ def main(args: argparse.Namespace) -> None:
         recap=args.recap,
         recap_unconditional_prob=args.recap_unconditional_prob,
         recap_guidance_scale=args.recap_guidance_scale,
+        parameter_dtype=config.parameter_dtype,
+        sharding_strategy=config.sharding_strategy,
+        cpu_offload=config.cpu_offload,
+        fsdp_devices=config.fsdp_devices,
     )
     if sampling_report is not None:
         (Path(args.checkpoint_dir) / "recap_source_sampling.json").write_text(

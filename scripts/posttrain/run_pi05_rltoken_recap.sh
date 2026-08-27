@@ -316,8 +316,8 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     WCM_INIT_CHECKPOINT=
   )
   if [[ -n "${PREVIOUS_WCM}" ]]; then WCM_ENV+=(WCM_INIT_CHECKPOINT="${PREVIOUS_WCM}"); fi
-  env "${WCM_ENV[@]}" bash "${SCRIPT_DIR}/run_wcm.sh" --task "${TASK_NAME}"
   stop_gpu_reservation
+  env "${WCM_ENV[@]}" bash "${SCRIPT_DIR}/run_wcm.sh" --task "${TASK_NAME}"
   PREVIOUS_WCM="${WCM_OUTPUT}/deploy.pt"
   [[ -f "${PREVIOUS_WCM}" ]] || { echo "WCM deploy checkpoint missing: ${PREVIOUS_WCM}" >&2; exit 1; }
 

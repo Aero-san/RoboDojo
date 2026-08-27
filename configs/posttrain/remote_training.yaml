@@ -1,0 +1,149 @@
+schema_version: 1
+
+run:
+  task: put_bottles_into_dustbin
+  output_root: outputs/recap_remote
+  iterations: 20
+  resume: true
+  # The first iteration is already complete; retain it even though execution
+  # paths and downstream evaluation behavior changed after it was produced.
+  reuse_completed_artifacts: true
+  seed: 0
+
+environment:
+  env_cfg: arx_x5
+  action_type: joint
+  policy_env: openpi
+  eval_env: RoboDojo
+
+checkpoints:
+  initial_policy: /mnt/cpfs-E/mingyang/RoboDojo/XPolicyLab/policy/Pi_05/checkpoints/RoboDojo-put_bottles_into_dustbin-arx_x5-joint-0/11999
+  initial_wcm: outputs/wcm/robodojo_pi05/deploy.pt
+
+data:
+  demo_root: data/RoboDojo_lerobot_v21_video
+  max_demo_episodes: 100
+  mode: video
+  norm_asset_id: null
+
+devices:
+  pi05_train: [0,1,2,3]
+  wcm_train: [0,1,2,3]
+  rollout_policy: 0
+  rollout_environment: 1
+  value_video: 0
+  reservation:
+    enabled: true
+    leave_free_mib: 2048
+    idle_used_max_mib: 1024
+    remote_max_hold_seconds: 1800
+
+rollout:
+  episodes: 25
+  layout_seed: 0
+  minimum:
+    total: 20
+    successes: 3
+    failures: 3
+  remote:
+    enabled: true
+    host: XYZ4090
+    repo_root: /share/mingyang/RoboDojo
+    work_root: /share/mingyang/recap_remote_jobs
+    zstd: /usr/local/bin/zstd
+    conda: /share/mingyang/miniconda3/bin/conda
+    python: /share/mingyang/miniconda3/envs/RoboDojo/bin/python
+    policy_gpu: 0
+    environment_gpu: 1
+    value_video_gpu: 0
+    policy_evaluation: true
+
+training:
+  # Explicit opt-in. Set host to `local` to execute on this machine, or to
+  # an SSH config alias/hostname to execute on another machine.
+  remote:
+    enabled: true
+    host: XYZ6226
+    repo_root: /mnt/data-cpfs/mingyang/RoboDojo
+    work_root: /mnt/data-cpfs/mingyang/RoboDojo/recap_remote_jobs
+    zstd: /usr/bin/zstd
+    conda: /mnt/data-cpfs/mingyang/miniconda3/bin/conda
+    python: /mnt/data-cpfs/mingyang/miniconda3/envs/RoboDojo/bin/python
+    pi_python: /mnt/data-cpfs/mingyang/RoboDojo/XPolicyLab/policy/Pi_05/openpi/.venv/bin/python
+    wcm_python: /mnt/data-cpfs/mingyang/RoboDojo/external_dependencies/WCM/.venv/bin/python
+    pi05_gpus: [0, 1,2,3]
+    wcm_gpus: [0, 1,2,3]
+    value_video_gpu: 0
+    render_value_video: true
+
+wcm:
+  train:
+    config: configs/wcm/robodojo_pi05.yaml
+    epochs: 2
+    replay_episodes: 50
+    per_device_batch_size: 96
+    num_workers: 8
+    precision: bf16
+    learning_rate: null
+    warmup_steps: null
+    video_decoder: pyav
+  inference:
+    batch_size: 96
+    num_workers: 8
+    device: cuda
+
+recap:
+  lookahead: 10
+  gamma: 1.0
+  failure_penalty: 300
+  positive_fraction: 0.3
+  unconditional_probability: 0.1
+  guidance_scale: 1.0
+  sampling:
+    demonstrations: 1.0
+    rollouts: 1.0
+
+pi05:
+  train_config: pi05_base_aloha_full_sim_arx-x5_seed_0
+  finetune_mode: all_lora
+  steps: 500
+  batch_size: 64
+  num_workers: 8
+  parameter_dtype: float32
+  sharding_strategy: no_shard
+  fsdp_devices: 2
+  cpu_offload: false
+  ema_decay: 0.99
+  action_expert_variant: null
+  paligemma_variant: null
+  xla_memory_fraction: 0.9
+  wandb_enabled: true
+  log_interval: 50
+  optimizer:
+    learning_rate: 5.0e-6
+    warmup_steps: 50
+    decay_lr: 1.0e-7
+    weight_decay: 1.0e-10
+    clip_gradient_norm: 1.0
+
+evaluation:
+  interval: 100
+  episodes: 10
+  reuse_rollout: true
+  layout_seed: 1
+  layout_offset: 0
+
+value_video:
+  episodes: 3
+  batch_size: 16
+  device: cuda
+  precision: fp32
+  backend: auto
+  speed: 1.0
+  y_min: -1.0
+  y_max: 1.0
+
+runtime:
+  pi_python: null
+  wcm_python: null
+  policy_dir: null

@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import unittest
+from unittest import mock
+
+from scripts.posttrain import remote_recap, remote_training
+
+
+class RemoteTrainingHelpersTest(unittest.TestCase):
+    def test_local_host_aliases_are_not_sent_to_ssh(self):
+        self.assertTrue(remote_recap._is_local_host("local"))
+        self.assertTrue(remote_recap._is_local_host("localhost"))
+
+    def test_stage_markers_use_the_remote_checkout(self):
+        expanded = remote_training._expand(
+            "@repo/scripts/posttrain/train.py @input/lerobot/foo --out @output",
+            "/remote/work/jobs/example",
+            "/remote/RoboDojo",
+            {"lerobot/foo": "/remote/work/jobs/example/inputs/lerobot/foo"},
+            "/remote/work/jobs/example/output",
+        )
+        self.assertEqual(
+            expanded,
+            "/remote/RoboDojo/scripts/posttrain/train.py "
+            "/remote/work/jobs/example/inputs/lerobot/foo --out "
+            "/remote/work/jobs/example/output",
+        )
+
+    def test_pi05_paths_are_rewritten_to_remote_stage_paths(self):
+        args = SimpleNamespace(
+            train_arg=[
+                "--openpi-root",
+                "/local/Pi_05/openpi",
+                "--norm-stats-dir",
+                "/local/norm",
+                "--checkpoint-dir",
+                "/local/output",
+                "--init-checkpoint",
+                "/local/init",
+                "--repo-id",
+                "RoboDojo-recap-task-iter-1",
+            ]
+        )
+        self.assertEqual(
+            remote_training._rewrite_pi05_args(args),
+            [
+                "--openpi-root",
+                "@repo/XPolicyLab/policy/Pi_05/openpi",
+                "--norm-stats-dir",
+                "@input/norm_stats",
+                "--checkpoint-dir",
+                "@output",
+                "--init-checkpoint",
+                "@input/init_policy",
+                "--repo-id",
+                "RoboDojo-recap-task-iter-1",
+            ],
+        )
+
+    def test_directory_upload_uses_exact_destination_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "arbitrary-local-name"
+            source.mkdir()
+            destination = root / "remote" / "inputs" / "dataset"
+            backend = SimpleNamespace(host="local")
+
+            with (
+                mock.patch.object(remote_recap, "_run") as run,
+                mock.patch.object(remote_recap, "_remote") as remote,
+                mock.patch.object(remote_recap, "_scp"),
+            ):
+                remote_training._upload_directory(backend, source, str(destination))
+
+            self.assertEqual(run.call_args.args[0][-2:], [str(source), "."])
+            self.assertIn(
+                mock.call(backend, ["mkdir", "-p", str(destination)]),
+                remote.call_args_list,
+            )
+            extract = remote.call_args_list[-2].args[1]
+            self.assertEqual(extract[-2:], ["-C", str(destination)])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -105,18 +105,30 @@ def _install_initial_checkpoint(command) -> None:
     command.build_model = build_model
 
 
-def _install_gpu_reservation_release(command) -> None:
-    """Release launcher-held memory immediately before WCM model construction."""
+def _install_optimizer_overrides(command) -> None:
+    """Apply unified RECAP optimizer fields without editing the WCM checkout."""
 
-    from reserve_gpu_memory import release_gpu_reservation_from_environment
+    learning_rate = os.environ.get("WCM_LR", "").strip()
+    warmup_steps = os.environ.get("WCM_WARMUP_STEPS", "").strip()
+    if not learning_rate and not warmup_steps:
+        return
+    original_apply_runtime_overrides = command.apply_runtime_overrides
 
-    original_build_model = command.build_model
+    def apply_runtime_overrides(config):
+        config = original_apply_runtime_overrides(config)
+        if learning_rate:
+            value = float(learning_rate)
+            if value <= 0:
+                raise ValueError("wcm.train.learning_rate must be positive.")
+            config.optim.lr = value
+        if warmup_steps:
+            value = int(warmup_steps)
+            if value < 0:
+                raise ValueError("wcm.train.warmup_steps cannot be negative.")
+            config.optim.warmup_steps = value
+        return config
 
-    def build_model(config):
-        release_gpu_reservation_from_environment()
-        return original_build_model(config)
-
-    command.build_model = build_model
+    command.apply_runtime_overrides = apply_runtime_overrides
 
 
 def main() -> None:
@@ -153,8 +165,8 @@ def main() -> None:
         import world_critic.train as command
 
         command.load_lerobot_dataset = load_dataset
+        _install_optimizer_overrides(command)
         _install_initial_checkpoint(command)
-        _install_gpu_reservation_release(command)
         install_train_progress(command, train_epochs=_configured_epochs(parsed.args))
     else:
         import world_critic.evaluate as command

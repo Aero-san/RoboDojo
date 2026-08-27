@@ -497,21 +497,10 @@ case "${RECAP_REMOTE_ACTION}" in
       [[ -n "${!name:-}" ]] || { echo "Missing value-video variable: ${name}" >&2; exit 2; }
     done
     rollout_dir="${RECAP_REMOTE_JOB_ROOT}/rollouts"
-    if [[ ! -d "${rollout_dir}/episodes" ]]; then
-      rollout_archive="${RECAP_REMOTE_ROLLOUT_ARCHIVE:-}"
-      [[ -f "${rollout_archive}" ]] || {
-        echo "Local rollout transfer is missing; cannot rebuild ${rollout_dir}" >&2
-        exit 1
-      }
-      rm -rf "${rollout_dir}"
-      mkdir -p "${rollout_dir}"
-      tar --zstd -xf "${rollout_archive}" -C "${rollout_dir}"
-      [[ -d "${rollout_dir}/episodes" ]] || {
-        echo "Rebuilt rollout cache has no episodes: ${rollout_dir}" >&2
-        exit 1
-      }
-      echo "[RECAP remote] rebuilt rollout cache from uploaded local artifacts"
-    fi
+    [[ -d "${rollout_dir}/episodes" ]] || {
+      echo "Remote rollout cache is missing: ${rollout_dir}" >&2
+      exit 1
+    }
     wcm_checkpoint="${RECAP_REMOTE_JOB_ROOT}/wcm/deploy.pt"
     mkdir -p "$(dirname "${wcm_checkpoint}")"
     "${zstd_bin}" -q -d -f "${RECAP_REMOTE_WCM_ARCHIVE}" -o "${wcm_checkpoint}"

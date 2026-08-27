@@ -18,6 +18,7 @@
 | [posttrain/select_wcm_episodes.py](posttrain/select_wcm_episodes.py) | Rank/filter demonstrations with a trained WCM |
 | [posttrain/run_pi05_recap.sh](posttrain/run_pi05_recap.sh) | Iterated simulator rollout + WCM + RECAP Pi0.5 training |
 | [posttrain/render_rollout_value_videos.py](posttrain/render_rollout_value_videos.py) | Score rollout frames with WCM and render official value overlays |
+| [posttrain/remote_training.py](posttrain/remote_training.py) | Transfer and execute GPU-bound RECAP stages on a local or SSH host |
 | [posttrain/build_replay_buffer.py](posttrain/build_replay_buffer.py) | Aggregate SFT demonstrations and labelled policy rollouts |
 | [posttrain/build_replay_buffer_incremental.py](posttrain/build_replay_buffer_incremental.py) | Reuse a preceding RECAP buffer and append one rollout round |
 | [posttrain/build_wcm_training_subset.py](posttrain/build_wcm_training_subset.py) | Sample old replay episodes and combine them with every newly appended episode for one WCM update |
@@ -221,8 +222,13 @@ non-rollout artifacts are moved to a timestamped `.incomplete-*` sibling
 before rebuilding. WCM `last.pt` and OpenPI optimizer checkpoints resume
 inside their respective training stages when available. Completed rollout
 episodes are preserved and only the remaining episode count is collected.
-Iteration 1 has no rollout; later interrupted rollout rounds preserve completed
-episodes and continue from the next layout.
+Set `run.reuse_completed_artifacts: true` together with `run.resume: true` to
+explicitly trust structurally complete stages when a moved checkout or later
+configuration edit changed their fingerprint. This mode never treats a
+partial checkpoint as complete; missing stages and incomplete optimizer
+checkpoints still resume or rebuild normally.
+Every iteration collects rollout experience before updating the policy;
+interrupted rollout rounds preserve completed episodes and continue from the next layout.
 
 After each rollout-bearing iteration, the launcher scores the first three newly
 collected rollouts by default (or all of them when fewer than three were requested) and
@@ -237,6 +243,23 @@ of `[-1, 1]` makes values comparable between iterations; it can be changed
 with `RECAP_VALUE_VIDEO_Y_MIN` and `RECAP_VALUE_VIDEO_Y_MAX`. Raw curves,
 success labels, alignment reports, previews, and a summary JSON are retained
 beside the videos.
+Remote rollout directories are disposable caches for value-video rendering.
+If one has been cleaned up, the launcher validates and uploads the completed
+local rollout artifact to rebuild it instead of aborting the RECAP run.
+
+Policy evaluation does not use WCM and never gates or stops training. With
+`evaluation.reuse_rollout: true`, the baseline evaluation is a zero-copy view
+of the first `evaluation.episodes` completed rollouts from the same
+pre-training checkpoint. If fewer rollout episodes are available, only the
+remainder is collected on the configured `rollout.remote` host. Newly trained
+candidate checkpoints cannot reuse that baseline data, so their evaluation is
+performed on the remote rollout host with the same layout seed and offset.
+After all candidates are evaluated, the next iteration always continues from
+the candidate with the largest numeric checkpoint step, regardless of its
+score or the baseline score. Evaluation subprocess output stays in the job
+logs. Per-checkpoint metrics and provenance are recorded in
+`policy_evaluations/*/evaluation.json`; cumulative results and the best
+evaluated checkpoint are written under `<output_root>/<task>/`.
 
 Set `RECAP_MAX_DEMO_EPISODES=20`, or pass `--max-demo-episodes 20`, to use
 only the first 20 demonstrations after filtering to the requested task and
@@ -267,27 +290,82 @@ and dual-arm RoboDojo configurations. Fine-tuning still supports `full`,
 `action_expert`, `action_expert_lora`, `paligemma_lora`, and `all_lora` via
 `PI05_FINETUNE_MODE`.
 
-Pass `--config configs/posttrain/pi05_recap.yaml.example` to load a flat YAML
-configuration. Command-line flags override environment variables, which
-override YAML, which overrides launcher defaults. See
-[pi05_recap.yaml.example](../configs/posttrain/pi05_recap.yaml.example) for all
-common controls. Set `WCM_TRAIN_GPUS=0,1,2,3` to launch one official WCM
-DDP process per listed GPU; its world size is derived from the list, so there
-is no separate process-count setting. Advantage-label inference uses the same
-GPU list and shards windows without padding; both WCM batch-size settings are
-per GPU. `TRAIN_GPUS` exposes all listed devices
-to OpenPI. `OPENPI_FSDP_DEVICES` controls the FSDP axis and must divide the
-number of training GPUs; the remaining mesh axis is data parallel. For
-example, 8 training GPUs with `OPENPI_FSDP_DEVICES=2` use 4-way data parallel
-and 2-way FSDP, so all 8 GPUs participate.
+`run_pi05_recap.sh` requires one unified nested YAML configuration. Run it as
+`bash scripts/posttrain/run_pi05_recap.sh --config <path>`. Unknown fields,
+invalid enum values, inconsistent rollout limits, and incompatible GPU/FSDP/
+batch-size settings fail before any stage starts. See
+[pi05_recap.yaml.example](../configs/posttrain/pi05_recap.yaml.example) for the
+complete schema. The resolved defaults are written to
+`<output_root>/<task>/resolved_config.yaml`. Every model/data hyperparameter
+participates in the artifact fingerprint, while execution-only fields such as
+`run.resume`, Python paths, and physical GPU indices do not invalidate results.
+
+`devices.wcm_train` launches one official WCM DDP process per listed GPU; its
+world size is derived from the list. Advantage inference uses the same GPU
+list and shards windows without padding. `devices.value_video` selects the
+local GPU used for value-overlay rendering. `devices.pi05_train` defines the
+JAX mesh, while `pi05.fsdp_devices` controls its FSDP axis and must divide both
+the GPU count and global `pi05.batch_size`. Pi0.5 parameter dtype, sharding,
+offload, EMA, optimizer, and LoRA variants are passed explicitly into the
+OpenPI `TrainConfig` and recorded in every checkpoint's metadata.
 
 WCM, RECAP, RL Token RECAP, and WCM-selected Pi0.5 launchers reserve their
 training GPUs during long CPU-only dataset construction phases. The holder is
 released at the model-allocation boundary, including inside the official WCM
 and RL Token trainers, and is also cleaned up on errors or interrupts. It
 leaves 2048 MiB per GPU available for CUDA/NCCL initialization by default.
-Set `GPU_RESERVATION_FREE_MIB` to change that margin or
-`GPU_RESERVATION_ENABLED=0` to disable reservation.
+Use `devices.reservation.leave_free_mib` to change that margin or
+`devices.reservation.enabled: false` to disable reservation.
+
+Remote RECAP uses the same reservation settings. Before checkpoint/WCM upload
+and CPU-only extraction it atomically locks each requested remote GPU, verifies
+that no compute process is using it and that existing memory use is at most
+`devices.reservation.idle_used_max_mib` (64 MiB by default), and then reserves
+its free memory. The memory holder is released immediately before policy,
+Isaac Sim, or value inference starts; the per-GPU lock remains until that
+worker exits. Remote worker and reservation PIDs are stored below
+`<remote.work_root>/jobs/<job-id>/control`. Normal completion, failure, local
+`EXIT`, and `INT`/`TERM` all invoke the remote `cancel` path, which terminates
+the worker process group and releases the reservation and locks. The worker
+also watches its SSH launcher, while
+`devices.reservation.remote_max_hold_seconds` (1800 seconds by default) bounds
+an orphaned reservation if the local process is killed without running traps.
+
+Training can also be moved to a second machine with the optional
+`training.remote` block. It is disabled by default, so existing configurations
+keep their local WCM/Pi0.5 training behavior. Set `training.remote.host` to
+`local`/`localhost` to use this machine through the same transfer path, or set
+it to a passwordless SSH alias/hostname for another server. `repo_root` must
+point to a RoboDojo checkout on that host and `work_root` is a persistent job
+cache. `pi05_gpus` and `wcm_gpus` are GPU IDs on the training host; they are
+independent of the local `devices.*` values.
+
+When enabled, WCM training, WCM advantage inference, Pi0.5 training, and
+optional value-video rendering execute on the configured training host. Replay
+buffer/dataset preparation and the outer RECAP state machine remain local, and
+only their stage inputs/outputs cross the transport boundary. Set
+`training.remote.render_value_video: false` to keep value-video rendering
+local. Existing `rollout.remote` remains the preferred host for simulator
+rollouts and its value videos when configured.
+
+For example:
+
+```yaml
+training:
+  remote:
+    enabled: true
+    host: train4090                 # or: local
+    repo_root: /share/user/RoboDojo
+    work_root: /share/user/recap_remote_jobs
+    pi05_gpus: [0, 1]
+    wcm_gpus: [2, 3]
+```
+
+The remote preflight checks SSH/local execution, zstd, the RoboDojo checkout,
+WCM Python, GNU tar, `setsid`, and all requested GPUs before the first stage.
+Remote job directories are retained under `work_root/jobs/` so interrupted
+transfers can reuse a completed stage archive and `--resume` can upload the
+local partial checkpoint back to the same remote stage.
 
 A rollout episode itself is a sequential simulator-policy interaction and is
 not split across GPUs. `POLICY_GPU` and `ENV_GPU` do place the XPolicyLab
@@ -298,8 +376,12 @@ the terminal keeps one aggregate episode progress bar. A rollout-only
 collection can also be launched with `robodojo.sh eval --rollout-dir PATH`;
 this does not require LeRobot inside the Isaac environment.
 
-The final path is written to `outputs/recap/<task>/latest_policy.txt`. It is a
-normal OpenPI checkpoint with RoboDojo model metadata, so it can be scored via:
+The last checkpoint used for continuation and final output is written to
+`outputs/recap/<task>/latest_policy.txt`. The independently tracked best
+evaluated checkpoint is documented in `best_checkpoint.txt`,
+`best_checkpoint.json`, and `best_checkpoint.md` in the same directory; it may
+differ from the last checkpoint. Both are normal OpenPI checkpoints with
+RoboDojo model metadata, so the last checkpoint can be scored via:
 
 ```bash
 bash scripts/robodojo.sh eval \

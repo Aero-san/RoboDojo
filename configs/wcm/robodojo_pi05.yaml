@@ -68,7 +68,7 @@ loss:
   next_state_vector_weight: 0.0
   sigreg_weight: 0.01
   sigreg_knots: 17
-  sigreg_num_projections: 1024
+  sigreg_num_projections: 512
 
 optim:
   lr: 5.0e-5

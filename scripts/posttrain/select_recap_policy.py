@@ -1,4 +1,4 @@
-"""Select the best evaluated checkpoint and enforce a promotion safety gate."""
+"""Record evaluation results while always continuing from the last checkpoint."""
 
 from __future__ import annotations
 
@@ -36,35 +36,43 @@ def main(args: argparse.Namespace) -> None:
         )
     if not candidates:
         raise ValueError("No evaluated policy candidates were provided.")
-    selected = max(candidates, key=lambda row: (row["success_rate"], row["mean_score"], row["step"]))
-    required_rate = max(args.min_success_rate, baseline["success_rate"] - args.max_success_drop)
-    promoted = selected["success_rate"] >= required_rate
+    baseline_record = {
+        "step": None,
+        "checkpoint": str(Path(args.baseline_checkpoint).resolve()),
+        "rollout_root": str(baseline_root),
+        **baseline,
+    }
+    best_evaluated = max(
+        [baseline_record, *candidates],
+        key=lambda row: (
+            row["success_rate"],
+            row["mean_score"],
+            -1 if row["step"] is None else row["step"],
+        ),
+    )
+    continuation = max(candidates, key=lambda row: row["step"])
     payload = {
         "schema_version": 1,
-        "type": "recap_policy_promotion",
-        "baseline": {"checkpoint": str(Path(args.baseline_checkpoint).resolve()), **baseline},
+        "type": "recap_policy_selection",
+        "iteration": args.iteration,
+        "strategy": "continue_from_last_checkpoint",
+        "baseline": baseline_record,
         "candidates": candidates,
-        "selected": selected,
-        "required_success_rate": required_rate,
-        "max_success_drop": args.max_success_drop,
-        "min_success_rate": args.min_success_rate,
-        "promoted": promoted,
-        "policy": selected["checkpoint"] if promoted else str(Path(args.baseline_checkpoint).resolve()),
+        "best_evaluated": best_evaluated,
+        "continuation": continuation,
+        "policy": continuation["checkpoint"],
     }
     output = Path(args.output).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(payload["policy"])
-    if not promoted:
-        raise SystemExit(3)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--iteration", type=int, required=True)
     parser.add_argument("--baseline-checkpoint", required=True)
     parser.add_argument("--baseline-rollouts", required=True)
     parser.add_argument("--candidate", action="append", default=[])
-    parser.add_argument("--max-success-drop", type=float, default=0.1)
-    parser.add_argument("--min-success-rate", type=float, default=0.0)
     parser.add_argument("--output", required=True)
     main(parser.parse_args())
