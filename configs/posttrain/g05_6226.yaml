@@ -15,7 +15,7 @@ environment:
   env_cfg: arx_x5
   action_type: joint
   policy_env: /share/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv
-  eval_env: /mnt/cpfs-E/mingyang/miniconda3/envs/RoboDojo
+  eval_env: /mnt/data-cpfs/mingyang/miniconda3/envs/RoboDojo
 
 checkpoints:
   initial_policy: XPolicyLab/policy/G05/checkpoints/hf_g05_robodojo_fm_only_checkpoint
@@ -109,7 +109,7 @@ recap:
 
 g05:
   # Upstream GalaxeaVLA checkout on the active training host.
-  root: /mnt/cpfs-E/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA
+  root: /mnt/data-cpfs/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA
   task_config: robodojo_recap
   processor_path: checkpoints/qwen3_5_2b_base_processor
   action_tokenizer: null
@@ -144,7 +144,7 @@ value_video:
   y_max: 1.0
 
 runtime:
-  policy_python: /mnt/cpfs-E/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv/bin/python
+  policy_python: /mnt/data-cpfs/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv/bin/python
   data_python: XPolicyLab/policy/Pi_05/openpi/.venv/bin/python
-  wcm_python: /mnt/cpfs-E/mingyang/miniconda3/envs/RoboDojo/bin/python
+  wcm_python: /mnt/data-cpfs/mingyang/miniconda3/envs/RoboDojo/bin/python
   policy_dir: null

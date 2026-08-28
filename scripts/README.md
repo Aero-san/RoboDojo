@@ -231,6 +231,26 @@ rollout sampling weights, and `recap.guidance_scale: 1.0`.
 `training.remote` independently stages WCM and policy training on a second
 host. For G05, `rollout.remote.g05_root`, `g05.root`, and
 `training.remote.policy_python` refer to paths on their respective hosts.
+
+While the launcher is alive, local GPUs listed by `devices.policy_train` or
+`devices.wcm_train` are kept occupied whenever they are not performing real
+RECAP compute. Full local reservation covers startup/preflight, fixed-asset and
+normalization work, replay/WCM/policy dataset generation, artifact checks,
+reports, and every remote rollout, evaluation, training, inference, rendering,
+upload, download, or result wait. During local rollout/evaluation, WCM,
+advantage inference, policy training, or value-video rendering, the launcher
+releases only the GPUs used by that workload and keeps the remaining configured
+GPUs reserved. It restores the full reservation immediately after the local
+workload exits.
+
+Reservation allocates otherwise-free memory rather than running artificial
+compute. `devices.reservation.leave_free_mib` remains free on each held card,
+`devices.reservation.enabled: false` disables the behavior, and the `EXIT`,
+`INT`, and `TERM` cleanup paths terminate the holder so all local memory is
+released when the main program ends.
+
+Staging hosts named `local` or `localhost` are treated as real local GPU work,
+so their configured cards are excluded from the holder rather than overcommitted.
 Remote preflight checks SSH, executables, repository files, upstream G05, tar,
 zstd, `setsid`, and requested GPUs.
 

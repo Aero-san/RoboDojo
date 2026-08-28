@@ -116,6 +116,17 @@ def _install_worker(args: argparse.Namespace) -> str:
     return remote_worker
 
 
+def _install_g05_adapter(args: argparse.Namespace) -> None:
+    local_adapter = (
+        Path(__file__).resolve().parents[2] / "XPolicyLab/policy/G05/model.py"
+    )
+    remote_adapter = f"{args.remote_repo_root}/XPolicyLab/policy/G05/model.py"
+    temporary = f"{remote_adapter}.tmp-{os.getpid()}"
+    _scp(args, str(local_adapter), f"{args.host}:{temporary}")
+    _remote(args, ["mv", temporary, remote_adapter])
+    print("[RECAP remote] installed current G05 policy adapter", flush=True)
+
+
 def _resolve_pi05_checkpoint(checkpoint: Path) -> Path:
     checkpoint = checkpoint.expanduser().resolve()
     if (checkpoint / "params").is_dir():
@@ -408,6 +419,8 @@ def rollout(args: argparse.Namespace) -> None:
     try:
         _reserve_remote_gpus(args, job_root, [args.policy_gpu, args.env_gpu])
         worker = _install_worker(args)
+        if args.policy == "g05":
+            _install_g05_adapter(args)
         if not _remote_success(args, ["test", "-f", f"{job_root}/policy/.extracted"]):
             _package_checkpoint(args.policy, checkpoint, archive)
             _remote(args, ["mkdir", "-p", inbox])

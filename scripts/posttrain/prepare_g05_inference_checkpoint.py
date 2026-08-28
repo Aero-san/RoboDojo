@@ -1,8 +1,9 @@
-"""Remove training-only dataset locations from a copied G05 rollout checkpoint."""
+"""Prepare a copied G05 checkpoint config for dataset-free remote rollout."""
 
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 from pathlib import Path
 from typing import Any
@@ -40,8 +41,41 @@ def _strip_training_data_locations(
             )
 
 
+def _materialize_action_tokenizer_config(
+    payload: dict[str, Any],
+    *,
+    changes: list[str],
+) -> None:
+    """Detach AT_CONFIG from its interpolation before sidecar path patching."""
+
+    model = payload.get("model")
+    if not isinstance(model, dict):
+        raise TypeError("G05 checkpoint config has no model mapping.")
+    model_arch = model.get("model_arch")
+    if not isinstance(model_arch, dict):
+        raise TypeError("G05 checkpoint config has no model.model_arch mapping.")
+
+    tokenizer = model.get("tokenizer")
+    if not isinstance(tokenizer, dict):
+        tokenizer = payload.get("tokenizer")
+    if not isinstance(tokenizer, dict):
+        raise TypeError("G05 checkpoint config has no tokenizer mapping.")
+    vq_config = tokenizer.get("vq_config")
+    if not isinstance(vq_config, dict) or not vq_config.get("vqvae_type"):
+        raise ValueError("G05 checkpoint tokenizer.vq_config has no vqvae_type.")
+
+    current = model_arch.get("AT_CONFIG")
+    if isinstance(current, dict) and current.get("vqvae_type"):
+        return
+    materialized = deepcopy(vq_config)
+    if isinstance(current, dict):
+        materialized.update(current)
+    model_arch["AT_CONFIG"] = materialized
+    changes.append("materialized:model.model_arch.AT_CONFIG")
+
+
 def prepare_g05_inference_checkpoint(checkpoint_root: str | Path) -> list[str]:
-    """Make a transferred checkpoint config independent of training datasets."""
+    """Remove training paths and detach the action-tokenizer config interpolation."""
 
     checkpoint_root = Path(checkpoint_root).expanduser().resolve()
     config_path = checkpoint_root / ".hydra" / "config.yaml"
@@ -55,16 +89,18 @@ def prepare_g05_inference_checkpoint(checkpoint_root: str | Path) -> list[str]:
     if not isinstance(data, dict):
         raise TypeError(f"G05 checkpoint Hydra config has no data mapping: {config_path}")
 
-    removed: list[str] = []
-    _strip_training_data_locations(data, path=("data",), removed=removed)
+    changes: list[str] = []
+    _strip_training_data_locations(data, path=("data",), removed=changes)
     logger = payload.get("logger")
     if isinstance(logger, dict):
         for key in _TRAINING_ONLY_LOGGER_KEYS:
             if key in logger:
-                removed.append(f"logger.{key}")
+                changes.append(f"logger.{key}")
                 del logger[key]
 
-    if removed:
+    _materialize_action_tokenizer_config(payload, changes=changes)
+
+    if changes:
         temporary = config_path.with_name(f"{config_path.name}.tmp")
         temporary.write_text(
             yaml.safe_dump(payload, sort_keys=False),
@@ -72,19 +108,19 @@ def prepare_g05_inference_checkpoint(checkpoint_root: str | Path) -> list[str]:
         )
         temporary.chmod(config_path.stat().st_mode)
         temporary.replace(config_path)
-    return removed
+    return changes
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint-root", required=True)
     args = parser.parse_args()
-    removed = prepare_g05_inference_checkpoint(args.checkpoint_root)
+    changes = prepare_g05_inference_checkpoint(args.checkpoint_root)
     print(
         json.dumps(
             {
                 "checkpoint_root": str(Path(args.checkpoint_root).expanduser().resolve()),
-                "removed_training_data_fields": removed,
+                "inference_config_changes": changes,
             }
         ),
         flush=True,

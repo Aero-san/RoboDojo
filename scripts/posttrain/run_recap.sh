@@ -347,6 +347,70 @@ fi
 [[ "${POLICY_GPU}" =~ ^[0-9]+$ ]] || { echo "--policy-gpu must be one numeric GPU id" >&2; exit 2; }
 [[ "${ENV_GPU}" =~ ^[0-9]+$ ]] || { echo "--env-gpu must be one numeric GPU id" >&2; exit 2; }
 [[ "${VALUE_VIDEO_GPU}" =~ ^[0-9]+$ ]] || { echo "RECAP_VALUE_VIDEO_GPU must be one numeric GPU id" >&2; exit 2; }
+
+declare -a LOCAL_GPU_IDS=()
+declare -A LOCAL_GPU_SEEN=()
+for local_gpu in "${POLICY_TRAIN_GPU_IDS[@]}" "${WCM_TRAIN_GPU_IDS[@]}"; do
+  if [[ -z "${LOCAL_GPU_SEEN[${local_gpu}]:-}" ]]; then
+    LOCAL_GPU_IDS+=("${local_gpu}")
+    LOCAL_GPU_SEEN[${local_gpu}]=1
+  fi
+done
+
+is_local_recap_host() {
+  local host="$1"
+  case "${host}" in
+    local|localhost|127.0.0.1|::1) return 0 ;;
+  esac
+  [[ "${host}" == "$(hostname)" || "${host}" == "$(hostname -f 2>/dev/null)" ]]
+}
+
+# Reserve every configured local GPU that is not doing real work in the
+# current phase. Switching phases atomically replaces the previous holder.
+reserve_idle_local_gpus() {
+  local label="$1"
+  shift
+  local -A active_gpu_ids=()
+  if (( ${ROLLOUT_PENDING:-0} )) && is_local_recap_host "${REMOTE_HOST}"; then
+    active_gpu_ids[${REMOTE_POLICY_GPU}]=1
+    active_gpu_ids[${REMOTE_ENV_GPU}]=1
+  fi
+  local active_ids active_gpu local_gpu
+  local -a parsed_active_gpu_ids=()
+  for active_ids in "$@"; do
+    IFS=',' read -r -a parsed_active_gpu_ids <<< "${active_ids//[[:space:]]/}"
+    for active_gpu in "${parsed_active_gpu_ids[@]}"; do
+      [[ -z "${active_gpu}" ]] || active_gpu_ids[${active_gpu}]=1
+    done
+  done
+  local -a idle_gpu_ids=()
+  for local_gpu in "${LOCAL_GPU_IDS[@]}"; do
+    if [[ -z "${active_gpu_ids[${local_gpu}]:-}" ]]; then
+      idle_gpu_ids+=("${local_gpu}")
+    fi
+  done
+  if (( ${#idle_gpu_ids[@]} == 0 )); then
+    stop_gpu_reservation
+    return
+  fi
+  local idle_gpus
+  idle_gpus=$(IFS=','; echo "${idle_gpu_ids[*]}")
+  start_gpu_reservation "${idle_gpus}" "${WCM_PYTHON_BIN}" "${label}"
+}
+
+reserve_all_local_gpus() {
+  reserve_idle_local_gpus "$1"
+}
+
+reserve_during_remote_gpu_stage() {
+  local label="$1" host="$2" active_gpus="$3"
+  if is_local_recap_host "${host}"; then
+    reserve_idle_local_gpus "${label}" "${active_gpus}"
+  else
+    reserve_all_local_gpus "${label}"
+  fi
+}
+
 if [[ "${POLICY_NAME}" == "pi05" ]]; then
 FSDP_DEVICES="${OPENPI_FSDP_DEVICES:-$(( EFFECTIVE_POLICY_GPU_COUNT < 2 ? 1 : 2 ))}"
 [[ "${FSDP_DEVICES}" =~ ^[1-9][0-9]*$ ]] || { echo "OPENPI_FSDP_DEVICES must be positive" >&2; exit 2; }
@@ -391,6 +455,8 @@ if (( VALUE_VIDEO_EPISODES > 0 )); then
 fi
 export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
+
+reserve_all_local_gpus "RECAP startup, validation, and remote preflight"
 
 if (( REMOTE_ENABLED )); then
   echo "[RECAP remote] checking passwordless SSH, zstd, and remote RoboDojo checkout"
@@ -485,6 +551,7 @@ run_policy_evaluation() {
     local eval_job_id="${TASK_SLUG}-${RUN_CONFIG_FP:0:12}-eval-${eval_fp:0:16}"
     ACTIVE_REMOTE_JOB_ID="${eval_job_id}"
     local remote_status=0
+    reserve_during_remote_gpu_stage "waiting for remote policy evaluation and transfer" "${REMOTE_HOST}" "${REMOTE_POLICY_GPU},${REMOTE_ENV_GPU}"
     "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/remote_recap.py" rollout \
       --host "${REMOTE_HOST}" --remote-repo-root "${REMOTE_REPO_ROOT}" \
       --remote-work-root "${REMOTE_WORK_ROOT}" --job-id "${eval_job_id}" \
@@ -509,6 +576,8 @@ run_policy_evaluation() {
   fi
   mkdir -p "${output}"
   local log="${output}/eval.log"
+  reserve_idle_local_gpus "local policy evaluation on remaining GPUs" "${POLICY_GPU},${ENV_GPU}"
+  local eval_status=0
   ROBODOJO_DISABLE_PROGRESS=1 \
     bash "${ROOT_DIR}/scripts/robodojo.sh" eval \
       --policy-dir "${POLICY_DIR}" --task "${TASK_NAME}" --ckpt "${checkpoint}" \
@@ -517,11 +586,13 @@ run_policy_evaluation() {
       --policy-gpu "${POLICY_GPU}" --env-gpu "${ENV_GPU}" \
       --policy-env "${POLICY_ENV}" --eval-env "${EVAL_ENV}" \
       --eval-num "${episodes}" --rollout-dir "${output}" --no-video \
-      >"${log}" 2>&1 || {
-        echo "Policy evaluation failed; tail of ${log}:" >&2
-        tail -n 80 "${log}" >&2 || true
-        return 1
-      }
+      >"${log}" 2>&1 || eval_status=$?
+  reserve_all_local_gpus "post-evaluation processing"
+  if (( eval_status != 0 )); then
+    echo "Policy evaluation failed; tail of ${log}:" >&2
+    tail -n 80 "${log}" >&2 || true
+    return 1
+  fi
 }
 
 evaluate_policy_checkpoint() {
@@ -634,7 +705,7 @@ run_remote_wcm_stage() {
   elif [[ -n "${init_checkpoint}" ]]; then
     stage_args+=(--init-checkpoint "${init_checkpoint}")
   fi
-  stop_gpu_reservation
+  reserve_during_remote_gpu_stage "waiting for remote WCM training and transfer" "${TRAINING_REMOTE_HOST}" "${TRAINING_REMOTE_WCM_GPUS}"
   "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/remote_training.py" "${stage_args[@]}"
 }
 
@@ -653,7 +724,7 @@ run_remote_advantage_stage() {
     --device "${RECAP_WCM_DEVICE:-cuda}"
   )
   [[ -z "${TRAINING_REMOTE_WCM_PYTHON}" ]] || stage_args+=(--remote-wcm-python "${TRAINING_REMOTE_WCM_PYTHON}")
-  stop_gpu_reservation
+  reserve_during_remote_gpu_stage "waiting for remote WCM advantage inference and transfer" "${TRAINING_REMOTE_HOST}" "${TRAINING_REMOTE_WCM_GPUS}"
   "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/remote_training.py" "${stage_args[@]}"
 }
 
@@ -671,7 +742,7 @@ run_remote_pi05_stage() {
   [[ -z "${TRAINING_REMOTE_POLICY_PYTHON}" ]] || stage_args+=(--remote-policy-python "${TRAINING_REMOTE_POLICY_PYTHON}")
   if (( resume_requested )); then stage_args+=(--resume); fi
   for train_arg in "${TRAIN_ARGS[@]}"; do stage_args+=(--train-arg "${train_arg}"); done
-  stop_gpu_reservation
+  reserve_during_remote_gpu_stage "waiting for remote Pi0.5 training and transfer" "${TRAINING_REMOTE_HOST}" "${TRAINING_REMOTE_POLICY_GPUS}"
   "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/remote_training.py" "${stage_args[@]}"
 }
 
@@ -698,7 +769,7 @@ run_remote_g05_stage() {
   stage_args+=(--remote-policy-python "${TRAINING_REMOTE_POLICY_PYTHON}")
   if [[ "${G05_WANDB_ENABLED:-1}" == "1" ]]; then stage_args+=(--wandb); else stage_args+=(--no-wandb); fi
   if (( resume_requested )); then stage_args+=(--resume); fi
-  stop_gpu_reservation
+  reserve_during_remote_gpu_stage "waiting for remote G05 training and transfer" "${TRAINING_REMOTE_HOST}" "${TRAINING_REMOTE_POLICY_GPUS}"
   "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/remote_training.py" "${stage_args[@]}"
 }
 
@@ -718,7 +789,7 @@ run_remote_value_video_stage() {
     --title "WCM RECAP ITER ${iteration}"
   )
   [[ -z "${TRAINING_REMOTE_WCM_PYTHON}" ]] || stage_args+=(--remote-wcm-python "${TRAINING_REMOTE_WCM_PYTHON}")
-  stop_gpu_reservation
+  reserve_during_remote_gpu_stage "waiting for remote value-video rendering and transfer" "${TRAINING_REMOTE_HOST}" "${TRAINING_REMOTE_VALUE_VIDEO_GPU}"
   "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/remote_training.py" "${stage_args[@]}"
 }
 
@@ -847,6 +918,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       fi
       # RoboDojo's eval seed selects Assets/Eval_Layout/.../<seed>. It is not
       # an unconstrained RNG seed and must not track the training iteration.
+      reserve_idle_local_gpus "local rollout on remaining GPUs" "${POLICY_GPU},${ENV_GPU}"
       (
         ROBODOJO_DISABLE_PROGRESS=1 \
           bash "${ROOT_DIR}/scripts/robodojo.sh" eval \
@@ -878,6 +950,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       rollout_monitor_status=0
       wait "${ACTIVE_ROLLOUT_MONITOR_PID}" || rollout_monitor_status=$?
       ACTIVE_ROLLOUT_MONITOR_PID=""
+      reserve_all_local_gpus "post-rollout processing"
       if (( rollout_status != 0 || rollout_monitor_status != 0 )); then
         echo "RECAP rollout failed; tail of ${ROLLOUT_LOG}:" >&2
         tail -n 80 "${ROLLOUT_LOG}" >&2 || true
@@ -909,7 +982,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   else
     archive_incomplete "${BUFFER_ROOT}"
     echo "[RECAP ${iteration}/${ITERATIONS}] aggregating SFT plus ${#ROLLOUT_ROOTS[@]} completed rollout rounds"
-    start_gpu_reservation "${WCM_TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "RECAP replay-buffer and WCM dataset preparation"
+    reserve_all_local_gpus "RECAP replay-buffer and WCM dataset preparation"
     if [[ -n "${PREVIOUS_BUFFER}" ]]; then
       "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/build_replay_buffer_incremental.py" \
         --previous-buffer "${PREVIOUS_BUFFER}" \
@@ -956,7 +1029,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
 
   if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && artifact_complete wcm "${WCM_OUTPUT}"; then
     reuse_stage wcm
-    stop_gpu_reservation
+    reserve_all_local_gpus "post-WCM processing"
   else
     WCM_STAGE_RESUME=""
     if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && [[ -f "${WCM_OUTPUT}/checkpoints/last.pt" ]]; then
@@ -966,7 +1039,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       archive_incomplete "${WCM_OUTPUT}"
     fi
     echo "[RECAP ${iteration}/${ITERATIONS}] updating WCM on successes and failures"
-    start_gpu_reservation "${WCM_TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "WCM dataset preparation"
+    reserve_all_local_gpus "WCM dataset preparation"
     WCM_ENV=(
       PYTHON_BIN="${WCM_PYTHON_BIN}"
       WCM_DATASET_ROOT="${WCM_BUFFER}"
@@ -986,8 +1059,9 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     if (( TRAINING_REMOTE_ENABLED )); then
       run_remote_wcm_stage "${WCM_OUTPUT}" "${WCM_STAGE_RESUME}" "${PREVIOUS_WCM}"
     else
-      stop_gpu_reservation
+      reserve_idle_local_gpus "local WCM training on remaining GPUs" "${WCM_TRAIN_GPUS}"
       env "${WCM_ENV[@]}" bash "${SCRIPT_DIR}/run_wcm.sh" --task "${TASK_NAME}"
+      reserve_all_local_gpus "post-WCM processing"
     fi
     mark_artifact wcm "${WCM_OUTPUT}"
     REBUILD_DOWNSTREAM=1
@@ -1007,6 +1081,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       REMOTE_JOB_ID="${TASK_SLUG}-${RUN_CONFIG_FP:0:12}-iter-$(printf '%02d' "${iteration}")"
       ACTIVE_REMOTE_JOB_ID="${REMOTE_JOB_ID}"
       echo "[RECAP ${iteration}/${ITERATIONS}] launching remote rollout job=${REMOTE_JOB_ID}"
+      reserve_during_remote_gpu_stage "remote rollout and transfer" "${REMOTE_HOST}" "${REMOTE_POLICY_GPU},${REMOTE_ENV_GPU}"
       (
         "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/remote_recap.py" rollout \
           --host "${REMOTE_HOST}" --remote-repo-root "${REMOTE_REPO_ROOT}" \
@@ -1037,7 +1112,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       else
         archive_incomplete "${WCM_INPUT_BUFFER}"
         echo "[RECAP ${iteration}/${ITERATIONS}] building demonstration-only first WCM buffer"
-        start_gpu_reservation "${WCM_TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "RECAP demonstration buffer preparation"
+        reserve_all_local_gpus "RECAP demonstration buffer preparation"
         "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/build_replay_buffer.py" \
           --demo-root "${DEMO_ROOT}" --demo-format "${DEMO_FORMAT}" --output "${WCM_INPUT_BUFFER}" \
           --task "${TASK_NAME}" --max-demo-episodes "${MAX_DEMO_EPISODES}" \
@@ -1067,7 +1142,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
 
     if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && artifact_complete wcm "${WCM_OUTPUT}"; then
       reuse_stage wcm
-      stop_gpu_reservation
+      reserve_all_local_gpus "waiting for remote rollout and post-WCM processing"
     else
       WCM_STAGE_RESUME=""
       if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && [[ -f "${WCM_OUTPUT}/checkpoints/last.pt" ]]; then
@@ -1077,7 +1152,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
         archive_incomplete "${WCM_OUTPUT}"
       fi
       echo "[RECAP ${iteration}/${ITERATIONS}] training lagged WCM while remote rollout runs"
-      start_gpu_reservation "${WCM_TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "WCM dataset preparation"
+      reserve_all_local_gpus "WCM dataset preparation while remote rollout runs"
       WCM_ENV=(
         PYTHON_BIN="${WCM_PYTHON_BIN}"
         WCM_DATASET_ROOT="${WCM_BUFFER}"
@@ -1097,20 +1172,24 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       if (( TRAINING_REMOTE_ENABLED )); then
         run_remote_wcm_stage "${WCM_OUTPUT}" "${WCM_STAGE_RESUME}" "${PREVIOUS_WCM}"
       else
-        stop_gpu_reservation
+        reserve_idle_local_gpus "local WCM training on remaining GPUs" "${WCM_TRAIN_GPUS}"
         env "${WCM_ENV[@]}" bash "${SCRIPT_DIR}/run_wcm.sh" --task "${TASK_NAME}"
+        reserve_all_local_gpus "waiting for remote rollout transfer"
       fi
       mark_artifact wcm "${WCM_OUTPUT}"
       REBUILD_DOWNSTREAM=1
     fi
     PREVIOUS_WCM="${WCM_OUTPUT}/deploy.pt"
     [[ -f "${PREVIOUS_WCM}" ]] || { echo "WCM deploy checkpoint missing: ${PREVIOUS_WCM}" >&2; exit 1; }
+    reserve_all_local_gpus "waiting for remote rollout transfer"
 
     if (( ROLLOUT_PENDING )); then
       echo "[RECAP ${iteration}/${ITERATIONS}] WCM finished; waiting for remote rollout transfer"
       rollout_status=0
       wait "${ACTIVE_ROLLOUT_PID}" || rollout_status=$?
       ACTIVE_ROLLOUT_PID=""
+      ROLLOUT_PENDING=0
+      reserve_all_local_gpus "post-remote-rollout processing"
       ACTIVE_REMOTE_JOB_ID=""
       if (( rollout_status != 0 )); then
         echo "Remote RECAP rollout failed; log follows:" >&2
@@ -1134,7 +1213,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     else
       archive_incomplete "${BUFFER_ROOT}"
       echo "[RECAP ${iteration}/${ITERATIONS}] appending returned rollout to the replay buffer"
-      start_gpu_reservation "${WCM_TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "RECAP replay-buffer preparation"
+      reserve_all_local_gpus "RECAP replay-buffer preparation"
       "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/build_replay_buffer_incremental.py" \
         --previous-buffer "${WCM_INPUT_BUFFER}" --rollout-root "${RAW_ROLLOUTS}" \
         --output "${BUFFER_ROOT}" --task "${TASK_NAME}" --seed "$((SEED + iteration))"
@@ -1148,10 +1227,8 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       "${BUFFER_ROOT}/meta/info.json")
   fi
 
-  # Replay-buffer preparation may reserve the WCM GPUs while it performs
-  # CPU-only work. Advantage annotation is the next real GPU workload, so
-  # release that reservation on every pipeline branch before launching it.
-  stop_gpu_reservation
+  # Remote/reused inference keeps every local card reserved; local inference
+  # releases only the WCM cards it actually uses.
   ADVANTAGE_ARGS=(
     --wcm-checkpoint "${PREVIOUS_WCM}"
     --dataset-root "${BUFFER_ROOT}"
@@ -1173,14 +1250,18 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     echo "[RECAP ${iteration}/${ITERATIONS}] computing N-step advantage labels"
     if (( TRAINING_REMOTE_ENABLED )); then
       run_remote_advantage_stage
-    elif (( WCM_GPU_COUNT == 1 )); then
-      CUDA_VISIBLE_DEVICES="${WCM_TRAIN_GPUS}" \
-        "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/annotate_recap_advantages.py" "${ADVANTAGE_ARGS[@]}"
     else
-      CUDA_VISIBLE_DEVICES="${WCM_TRAIN_GPUS}" \
-        "${WCM_PYTHON_BIN}" -m torch.distributed.run --standalone \
-          --nproc_per_node="${WCM_GPU_COUNT}" \
-          "${SCRIPT_DIR}/annotate_recap_advantages.py" "${ADVANTAGE_ARGS[@]}"
+      reserve_idle_local_gpus "local WCM advantage inference on remaining GPUs" "${WCM_TRAIN_GPUS}"
+      if (( WCM_GPU_COUNT == 1 )); then
+        CUDA_VISIBLE_DEVICES="${WCM_TRAIN_GPUS}" \
+          "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/annotate_recap_advantages.py" "${ADVANTAGE_ARGS[@]}"
+      else
+        CUDA_VISIBLE_DEVICES="${WCM_TRAIN_GPUS}" \
+          "${WCM_PYTHON_BIN}" -m torch.distributed.run --standalone \
+            --nproc_per_node="${WCM_GPU_COUNT}" \
+            "${SCRIPT_DIR}/annotate_recap_advantages.py" "${ADVANTAGE_ARGS[@]}"
+      fi
+      reserve_all_local_gpus "post-advantage dataset preparation"
     fi
     mark_artifact advantages "${ADVANTAGES}"
     REBUILD_DOWNSTREAM=1
@@ -1195,7 +1276,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       archive_incomplete "${POLICY_DATASET}"
     fi
     echo "[RECAP ${iteration}/${ITERATIONS}] incrementally updating advantage-conditioned ${POLICY_NAME} dataset"
-    start_gpu_reservation "${TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "RECAP ${POLICY_NAME} dataset preparation"
+    reserve_all_local_gpus "RECAP ${POLICY_NAME} dataset preparation"
     POLICY_DATASET_ARGS=(
       --dataset-root "${BUFFER_ROOT}"
       --repo-id "${REPO_ID}"
@@ -1266,7 +1347,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && \
      artifact_complete policy "${POLICY_OUTPUT}" "${NUM_TRAIN_STEPS}"; then
     reuse_stage policy
-    stop_gpu_reservation
+    reserve_all_local_gpus "post-training evaluation and reporting"
   else
     POLICY_RESUME_REQUESTED=0
     if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && artifact_complete policy_resume "${POLICY_OUTPUT}"; then
@@ -1286,7 +1367,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
         run_remote_pi05_stage "${TRAIN_INIT}" "${POLICY_OUTPUT}" "${POLICY_RESUME_REQUESTED}"
       fi
     else
-      stop_gpu_reservation
+      reserve_idle_local_gpus "local ${POLICY_NAME} training on remaining GPUs" "${TRAIN_GPUS}"
       if [[ "${POLICY_NAME}" == "g05" ]]; then
         G05_RESUME_ARGS=()
         if (( POLICY_RESUME_REQUESTED )); then G05_RESUME_ARGS+=(--resume); fi
@@ -1313,6 +1394,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.9}" \
         "${POLICY_PYTHON_BIN}" "${SCRIPT_DIR}/train_pi05.py" "${TRAIN_ARGS[@]}"
       fi
+      reserve_all_local_gpus "post-training evaluation and remote transfers"
     fi
     artifact_complete policy "${POLICY_OUTPUT}" "${NUM_TRAIN_STEPS}" "" || {
       echo "${POLICY_NAME} did not produce required final checkpoint step $((NUM_TRAIN_STEPS - 1))" >&2
@@ -1375,6 +1457,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       echo "[RECAP ${iteration}/${ITERATIONS}] rendering ${VALUE_VIDEO_EPISODES} rollout videos with WCM value overlays"
       if (( REMOTE_ENABLED )); then
         ACTIVE_REMOTE_JOB_ID="${TASK_SLUG}-${RUN_CONFIG_FP:0:12}-iter-$(printf '%02d' "${iteration}")"
+        reserve_during_remote_gpu_stage "waiting for remote value-video rendering and transfer" "${REMOTE_HOST}" "${REMOTE_VALUE_VIDEO_GPU}"
         value_video_status=0
         "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/remote_recap.py" value-video \
           --host "${REMOTE_HOST}" --remote-repo-root "${REMOTE_REPO_ROOT}" \
@@ -1402,6 +1485,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       elif (( TRAINING_REMOTE_ENABLED && TRAINING_REMOTE_RENDER_VALUE_VIDEO )); then
         run_remote_value_video_stage "${ITER_DIR}/value_videos"
       else
+        reserve_idle_local_gpus "local value-video rendering on remaining GPUs" "${VALUE_VIDEO_GPU}"
         CUDA_VISIBLE_DEVICES="${VALUE_VIDEO_GPU}" \
           "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/render_rollout_value_videos.py" \
             --wcm-checkpoint "${PREVIOUS_WCM}" \
@@ -1416,6 +1500,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
             --y-min "${RECAP_VALUE_VIDEO_Y_MIN:--1.0}" \
             --y-max "${RECAP_VALUE_VIDEO_Y_MAX:-1.0}" \
             --title "WCM RECAP ITER ${iteration}"
+        reserve_all_local_gpus "post-value-video reporting"
       fi
       mark_artifact value_videos "${ITER_DIR}/value_videos"
       REBUILD_DOWNSTREAM=1

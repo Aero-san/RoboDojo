@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Shared lifecycle helpers for reserving training GPUs during CPU-only phases.
+# Shared lifecycle helpers for reserving otherwise-idle GPUs throughout a run.
 
 GPU_RESERVATION_PID="${ROBODOJO_GPU_RESERVATION_PID:-}"
 GPU_RESERVATION_READY_FILE="${ROBODOJO_GPU_RESERVATION_READY_FILE:-}"
+GPU_RESERVATION_GPU_IDS="${ROBODOJO_GPU_RESERVATION_GPU_IDS:-}"
 GPU_RESERVATION_TEMP_DIR=""
 
 start_gpu_reservation() {
@@ -11,7 +12,10 @@ start_gpu_reservation() {
   local label="$3"
   if [[ "${GPU_RESERVATION_ENABLED:-1}" == "0" ]]; then return; fi
   if [[ -n "${GPU_RESERVATION_PID}" ]] && kill -0 "${GPU_RESERVATION_PID}" 2>/dev/null; then
-    return
+    if [[ "${GPU_RESERVATION_GPU_IDS}" == "${gpu_ids}" ]]; then
+      return
+    fi
+    stop_gpu_reservation
   fi
   [[ "${gpu_ids}" =~ ^[0-9]+(,[0-9]+)*$ ]] || {
     echo "GPU reservation requires comma-separated numeric GPU ids, got: ${gpu_ids}" >&2
@@ -28,8 +32,10 @@ start_gpu_reservation() {
       --leave-free-mib "${GPU_RESERVATION_FREE_MIB:-2048}" \
       --label "${label}" &
   GPU_RESERVATION_PID=$!
+  GPU_RESERVATION_GPU_IDS="${gpu_ids}"
   export ROBODOJO_GPU_RESERVATION_PID="${GPU_RESERVATION_PID}"
   export ROBODOJO_GPU_RESERVATION_READY_FILE="${GPU_RESERVATION_READY_FILE}"
+  export ROBODOJO_GPU_RESERVATION_GPU_IDS="${GPU_RESERVATION_GPU_IDS}"
   while [[ ! -f "${GPU_RESERVATION_READY_FILE}" ]]; do
     if ! kill -0 "${GPU_RESERVATION_PID}" 2>/dev/null; then
       wait "${GPU_RESERVATION_PID}" || true
@@ -53,8 +59,9 @@ stop_gpu_reservation() {
   fi
   GPU_RESERVATION_PID=""
   GPU_RESERVATION_READY_FILE=""
+  GPU_RESERVATION_GPU_IDS=""
   GPU_RESERVATION_TEMP_DIR=""
-  unset ROBODOJO_GPU_RESERVATION_PID ROBODOJO_GPU_RESERVATION_READY_FILE
+  unset ROBODOJO_GPU_RESERVATION_PID ROBODOJO_GPU_RESERVATION_READY_FILE ROBODOJO_GPU_RESERVATION_GPU_IDS
 }
 
 install_gpu_reservation_exit_trap() {

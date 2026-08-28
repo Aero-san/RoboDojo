@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -15,7 +16,21 @@ from scripts.posttrain.prepare_g05_inference_checkpoint import (
 
 
 class RemoteTrainingHelpersTest(unittest.TestCase):
-    def test_g05_inference_checkpoint_drops_only_training_data_locations(self):
+    def test_g05_adapter_matches_policy_inferencer_constructor(self):
+        adapter_path = Path("XPolicyLab/policy/G05/model.py")
+        module = ast.parse(adapter_path.read_text(encoding="utf-8"))
+        calls = [
+            node
+            for node in ast.walk(module)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "PolicyInferencer"
+        ]
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual([keyword.arg for keyword in calls[0].keywords], ["device"])
+
+    def test_g05_inference_checkpoint_prepares_dataset_free_rollout_config(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config_path = root / ".hydra/config.yaml"
@@ -43,9 +58,16 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                             "processors": {"robodojo": {"shape_meta": {"action": []}}},
                         },
                         "model": {
+                            "tokenizer": {
+                                "vq_config": {
+                                    "vqvae_type": "g05.tokenizer.models.actioncodec2_v2.wrapper.ActionCodecV2Wrapper",
+                                    "ckpt_dir": "${oc.env:G05_ACTION_TOKENIZER_PATH}",
+                                }
+                            },
                             "model_arch": {
-                                "hf_processor_path": "${oc.env:G05_HF_PROCESSOR_PATH}"
-                            }
+                                "hf_processor_path": "${oc.env:G05_HF_PROCESSOR_PATH}",
+                                "AT_CONFIG": "${model.tokenizer.vq_config}",
+                            },
                         },
                         "logger": {
                             "type": "wandb",
@@ -60,17 +82,18 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            removed = prepare_g05_inference_checkpoint(root)
+            changes = prepare_g05_inference_checkpoint(root)
             result = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
             self.assertEqual(
-                removed,
+                changes,
                 [
                     "data.dataset_dirs",
                     "data.embodiment_datasets.robodojo.dataset_groups",
                     "logger.dir",
                     "logger.project",
                     "logger.workspace",
+                    "materialized:model.model_arch.AT_CONFIG",
                 ],
             )
             self.assertNotIn("dataset_dirs", result["data"])
@@ -84,6 +107,14 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                 "${oc.env:G05_HF_PROCESSOR_PATH}",
             )
             self.assertEqual(result["logger"], {"type": "wandb", "mode": "disabled"})
+            self.assertEqual(
+                result["model"]["model_arch"]["AT_CONFIG"],
+                {
+                    "vqvae_type": "g05.tokenizer.models.actioncodec2_v2.wrapper.ActionCodecV2Wrapper",
+                    "ckpt_dir": "${oc.env:G05_ACTION_TOKENIZER_PATH}",
+                },
+            )
+            self.assertEqual(prepare_g05_inference_checkpoint(root), [])
 
     def test_worker_installer_uploads_g05_inference_preparer(self):
         args = SimpleNamespace(host="XYZ4090", remote_work_root="/remote/jobs")
@@ -101,6 +132,29 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
             )
         )
 
+    def test_g05_adapter_installer_targets_remote_checkout_atomically(self):
+        args = SimpleNamespace(
+            host="XYZ4090",
+            remote_repo_root="/remote/RoboDojo",
+        )
+        with (
+            mock.patch.object(remote_recap, "_remote") as remote,
+            mock.patch.object(remote_recap, "_scp") as scp,
+        ):
+            remote_recap._install_g05_adapter(args)
+
+        source, destination = scp.call_args.args[1:]
+        self.assertEqual(Path(source).name, "model.py")
+        self.assertIn(
+            "XYZ4090:/remote/RoboDojo/XPolicyLab/policy/G05/model.py.tmp-",
+            destination,
+        )
+        move = remote.call_args.args[1]
+        self.assertEqual(move[0], "mv")
+        self.assertEqual(
+            move[-1],
+            "/remote/RoboDojo/XPolicyLab/policy/G05/model.py",
+        )
 
     def test_local_host_aliases_are_not_sent_to_ssh(self):
         self.assertTrue(remote_recap._is_local_host("local"))
@@ -209,7 +263,12 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                     remote_recap, "_remote_success", side_effect=[False, False]
                 ),
                 mock.patch.object(remote_recap, "_reserve_remote_gpus"),
-                mock.patch.object(remote_recap, "_install_worker", return_value="worker"),
+                mock.patch.object(
+                    remote_recap, "_install_worker", return_value="worker"
+                ),
+                mock.patch.object(
+                    remote_recap, "_install_g05_adapter"
+                ) as install_adapter,
                 mock.patch.object(remote_recap, "_package_checkpoint"),
                 mock.patch.object(remote_recap, "_remote"),
                 mock.patch.object(remote_recap, "_scp"),
@@ -220,6 +279,7 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
             ):
                 remote_recap.rollout(args)
 
+            install_adapter.assert_called_once_with(args)
             environment = invoke.call_args.args[2]
             self.assertEqual(
                 environment["RECAP_REMOTE_G05_PROCESSOR_PATH"],
