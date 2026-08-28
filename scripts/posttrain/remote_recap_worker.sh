@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Execute one resumable RECAP simulator or value-video job on a remote GPU host.
 set -euo pipefail
+worker_bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 required=(RECAP_REMOTE_ACTION RECAP_REMOTE_REPO_ROOT RECAP_REMOTE_WORK_ROOT RECAP_REMOTE_JOB_ROOT)
 for name in "${required[@]}"; do
@@ -413,7 +414,30 @@ case "${RECAP_REMOTE_ACTION}" in
       g05)
         policy_dir="${RECAP_REMOTE_REPO_ROOT}/XPolicyLab/policy/G05"
         [[ -n "${RECAP_REMOTE_G05_ROOT:-}" ]] || { echo "Missing RECAP_REMOTE_G05_ROOT" >&2; exit 2; }
+        [[ -n "${RECAP_REMOTE_G05_PROCESSOR_PATH:-}" ]] || {
+          echo "Missing RECAP_REMOTE_G05_PROCESSOR_PATH" >&2; exit 2;
+        }
+        [[ -d "${RECAP_REMOTE_G05_PROCESSOR_PATH}" ]] || {
+          echo "Remote G05 processor directory not found: ${RECAP_REMOTE_G05_PROCESSOR_PATH}" >&2; exit 1;
+        }
+        [[ -d "${RECAP_REMOTE_G05_ROOT}" ]] || {
+          echo "Remote G05 checkout not found: ${RECAP_REMOTE_G05_ROOT}" >&2; exit 1;
+        }
+        [[ -f "${RECAP_REMOTE_G05_PROCESSOR_PATH}/tokenizer.json" ]] || {
+          echo "Remote G05 processor tokenizer.json not found: ${RECAP_REMOTE_G05_PROCESSOR_PATH}" >&2; exit 1;
+        }
+        for sidecar in dataset_stats.json action_tokenizer.pt; do
+          [[ -f "${checkpoint_dir}/${sidecar}" ]] || {
+            echo "Transferred G05 checkpoint is missing ${sidecar}: ${checkpoint_dir}" >&2; exit 1;
+          }
+        done
+        g05_preparer="${worker_bin}/prepare_g05_inference_checkpoint.py"
+        [[ -f "${g05_preparer}" ]] || {
+          echo "Remote G05 inference config preparer not found: ${g05_preparer}" >&2; exit 1;
+        }
+        "${python_bin}" "${g05_preparer}" --checkpoint-root "${checkpoint_dir}"
         export G05_ROOT="${RECAP_REMOTE_G05_ROOT}"
+        export G05_HF_PROCESSOR_PATH="${RECAP_REMOTE_G05_PROCESSOR_PATH}"
         export G05_ACTION_TOKENIZER_PATH="${checkpoint_dir}/action_tokenizer.pt"
         export ROBODOJO_G05_DATA_STATS="${checkpoint_dir}/dataset_stats.json"
         export ROBODOJO_RECAP_INFERENCE_CONDITION=positive

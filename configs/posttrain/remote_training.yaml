@@ -7,8 +7,8 @@ run:
   task: general_pickup
   output_root: outputs/recap_g05_remote
   iterations: 10
-  resume: false
-  reuse_completed_artifacts: false
+  resume: true
+  reuse_completed_artifacts: true
   seed: 0
 
 environment:
@@ -60,6 +60,7 @@ rollout:
     value_video_gpu: 0
     policy_evaluation: true
     g05_root: /share/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA
+    g05_processor_path: /share/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/checkpoints/qwen3_5_2b_base_processor
 
 training:
   # Explicit opt-in. Set host to `local` to execute on this machine, or to
@@ -82,11 +83,11 @@ training:
 wcm:
   train:
     config: configs/wcm/robodojo_pi05.yaml
-    epochs: 2
-    replay_episodes: 30
-    per_device_batch_size: 96
+    epochs: 5
+    replay_episodes: 44
+    per_device_batch_size: 64
     num_workers: 8
-    precision: bf16
+    precision: fp32
     learning_rate: null
     warmup_steps: null
     video_decoder: pyav

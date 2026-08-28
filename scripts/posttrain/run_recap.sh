@@ -148,6 +148,7 @@ POLICY_EVAL_REUSE_ROLLOUT="${RECAP_POLICY_EVAL_REUSE_ROLLOUT:-1}"
 POLICY_EVAL_LAYOUT_SEED="${RECAP_POLICY_EVAL_LAYOUT_SEED:-1}"
 POLICY_EVAL_LAYOUT_OFFSET="${RECAP_POLICY_EVAL_LAYOUT_OFFSET:-0}"
 REMOTE_G05_ROOT="${RECAP_REMOTE_G05_ROOT:-${G05_ROOT}}"
+REMOTE_G05_PROCESSOR_PATH="${RECAP_REMOTE_G05_PROCESSOR_PATH:-}"
 NORM_ASSET_ID="${OPENPI_NORM_ASSET_ID:-}"
 RESUME_RUN="${RECAP_RESUME:-0}"
 REUSE_COMPLETED_ARTIFACTS="${RECAP_REUSE_COMPLETED_ARTIFACTS:-0}"
@@ -491,6 +492,7 @@ run_policy_evaluation() {
       --remote-conda-bin "${REMOTE_CONDA_BIN}" \
       --remote-python-bin "${REMOTE_PYTHON_BIN}" \
       --policy "${POLICY_NAME}" --g05-root "${REMOTE_G05_ROOT}" \
+      --g05-processor-path "${REMOTE_G05_PROCESSOR_PATH}" \
       --g05-action-source "${ROBODOJO_G05_ACTION_SOURCE:-fm}" \
       --checkpoint "${checkpoint}" --output "${output}" --task "${TASK_NAME}" \
       --episodes "${episodes}" --layout-seed "${EFFECTIVE_POLICY_EVAL_LAYOUT_SEED}" \
@@ -1011,6 +1013,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
           --remote-work-root "${REMOTE_WORK_ROOT}" --job-id "${REMOTE_JOB_ID}" \
           --remote-zstd-bin "${REMOTE_ZSTD_BIN}" \
           --policy "${POLICY_NAME}" --g05-root "${REMOTE_G05_ROOT}" \
+          --g05-processor-path "${REMOTE_G05_PROCESSOR_PATH}" \
           --g05-action-source "${ROBODOJO_G05_ACTION_SOURCE:-fm}" \
           --remote-conda-bin "${REMOTE_CONDA_BIN}" \
           --remote-python-bin "${REMOTE_PYTHON_BIN}" \

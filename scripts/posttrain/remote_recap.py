@@ -98,12 +98,16 @@ def _validate(args: argparse.Namespace) -> None:
 def _install_worker(args: argparse.Namespace) -> str:
     local_worker = Path(__file__).with_name("remote_recap_worker.sh").resolve()
     local_reservation = Path(__file__).with_name("reserve_gpu_memory.py").resolve()
+    local_g05_preparer = Path(__file__).with_name(
+        "prepare_g05_inference_checkpoint.py"
+    ).resolve()
     remote_bin = f"{args.remote_work_root}/bin"
     remote_worker = f"{remote_bin}/remote_recap_worker.sh"
     _remote(args, ["mkdir", "-p", remote_bin])
     for local_path, remote_path in (
         (local_worker, remote_worker),
         (local_reservation, f"{remote_bin}/reserve_gpu_memory.py"),
+        (local_g05_preparer, f"{remote_bin}/prepare_g05_inference_checkpoint.py"),
     ):
         temporary = f"{remote_path}.tmp-{os.getpid()}"
         _scp(args, str(local_path), f"{args.host}:{temporary}")
@@ -381,6 +385,13 @@ def preflight(args: argparse.Namespace) -> None:
 def rollout(args: argparse.Namespace) -> None:
     #_remote(args, ["pkill", "-9", "-u", "mingyang", "-x", "python"])
     _validate(args)
+    if args.policy == "g05" and (
+        not args.g05_processor_path.startswith("/")
+        or any(character.isspace() for character in args.g05_processor_path)
+    ):
+        raise ValueError(
+            "--g05-processor-path must be an absolute remote path without whitespace"
+        )
     checkpoint = Path(args.checkpoint)
     local_output = Path(args.output)
     transfer_dir = local_output.parent / ".remote_transfers"
@@ -408,6 +419,7 @@ def rollout(args: argparse.Namespace) -> None:
                 "RECAP_REMOTE_CHECKPOINT_ARCHIVE": remote_checkpoint,
                 "RECAP_REMOTE_POLICY": args.policy,
                 "RECAP_REMOTE_G05_ROOT": args.g05_root,
+                "RECAP_REMOTE_G05_PROCESSOR_PATH": args.g05_processor_path,
                 "RECAP_REMOTE_G05_ACTION_SOURCE": args.g05_action_source,
                 "RECAP_REMOTE_RESULT_ARCHIVE": result,
                 "RECAP_REMOTE_TASK": args.task,
@@ -551,6 +563,7 @@ def main() -> None:
     rollout_parser.add_argument("--checkpoint", required=True)
     rollout_parser.add_argument("--policy", choices=("pi05", "g05"), required=True)
     rollout_parser.add_argument("--g05-root", default="")
+    rollout_parser.add_argument("--g05-processor-path", default="")
     rollout_parser.add_argument("--g05-action-source", choices=("fm", "ar"), default="fm")
     rollout_parser.add_argument("--output", required=True)
     rollout_parser.add_argument("--task", required=True)

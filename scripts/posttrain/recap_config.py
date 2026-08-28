@@ -45,6 +45,9 @@ FIELDS.update(
         "rollout.remote.g05_root": Field(
             "RECAP_REMOTE_G05_ROOT", "optional_str", None
         ),
+        "rollout.remote.g05_processor_path": Field(
+            "RECAP_REMOTE_G05_PROCESSOR_PATH", "optional_str", None
+        ),
         "devices.policy_train": Field("TRAIN_GPUS", "gpu_list"),
         "training.remote.policy_python": Field(
             "RECAP_TRAINING_REMOTE_POLICY_PYTHON", "optional_str", None
@@ -118,6 +121,11 @@ def _validate(values: dict[str, Any]) -> None:
             raise ValueError("G05 RECAP requires data.format: v3.0.")
         if values["g05.root"] is None:
             raise ValueError("G05 RECAP requires g05.root.")
+        if (
+            values["rollout.remote.enabled"]
+            and values["rollout.remote.g05_processor_path"] is None
+        ):
+            raise ValueError("Remote G05 rollout requires rollout.remote.g05_processor_path.")
         if values["g05.action_source"] != "fm":
             raise ValueError("G05 RECAP currently requires g05.action_source: fm.")
         if not values["training.remote.enabled"] and values["runtime.policy_python"] is None:

@@ -121,6 +121,16 @@ class RecapConfigTest(unittest.TestCase):
         self.assertEqual(environment["RECAP_TRAINING_REMOTE_POLICY_GPUS"], "0,1,2,3")
         self.assertEqual(environment["G05_DECAY_LEARNING_RATE"], "1e-06")
         self.assertEqual(environment["G05_DECAY_START_RATIO"], "0.5")
+        self.assertEqual(
+            environment["RECAP_REMOTE_G05_PROCESSOR_PATH"],
+            "/absolute/path/to/GalaxeaVLA/checkpoints/qwen3_5_2b_base_processor",
+        )
+
+    def test_remote_g05_requires_processor_path(self):
+        payload = yaml.safe_load(G05_EXAMPLE.read_text(encoding="utf-8"))
+        payload["rollout"]["remote"]["g05_processor_path"] = None
+        with self.assertRaisesRegex(ValueError, "g05_processor_path"):
+            self._resolve_payload(payload)
 
     def test_g05_rejects_v21_input(self):
         payload = yaml.safe_load(G05_EXAMPLE.read_text(encoding="utf-8"))

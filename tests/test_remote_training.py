@@ -1,15 +1,107 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+import yaml
+
 from scripts.posttrain import remote_recap, remote_training
+from scripts.posttrain.prepare_g05_inference_checkpoint import (
+    prepare_g05_inference_checkpoint,
+)
 
 
 class RemoteTrainingHelpersTest(unittest.TestCase):
+    def test_g05_inference_checkpoint_drops_only_training_data_locations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / ".hydra/config.yaml"
+            config_path.parent.mkdir()
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "data": {
+                            "action_size": 16,
+                            "dataset_dirs": ["${oc.env:ROBODOJO_LEROBOT_V30_ROOT}"],
+                            "embodiment_datasets": {
+                                "robodojo": {
+                                    "embodiment_type": "robodojo",
+                                    "dataset_groups": [
+                                        {
+                                            "weight": 1.0,
+                                            "dataset_dirs": [
+                                                "${oc.env:ROBODOJO_LEROBOT_V30_ROOT}"
+                                            ],
+                                        }
+                                    ],
+                                    "shape_meta": {"action": []},
+                                }
+                            },
+                            "processors": {"robodojo": {"shape_meta": {"action": []}}},
+                        },
+                        "model": {
+                            "model_arch": {
+                                "hf_processor_path": "${oc.env:G05_HF_PROCESSOR_PATH}"
+                            }
+                        },
+                        "logger": {
+                            "type": "wandb",
+                            "mode": "disabled",
+                            "dir": "${oc.env:G05_OUTPUT_DIR}",
+                            "project": "${oc.env:WANDB_PROJECT,g05}",
+                            "workspace": "${oc.env:WANDB_ENTITY,Galaxea-AI}",
+                        },
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+
+            removed = prepare_g05_inference_checkpoint(root)
+            result = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                removed,
+                [
+                    "data.dataset_dirs",
+                    "data.embodiment_datasets.robodojo.dataset_groups",
+                    "logger.dir",
+                    "logger.project",
+                    "logger.workspace",
+                ],
+            )
+            self.assertNotIn("dataset_dirs", result["data"])
+            self.assertNotIn(
+                "dataset_groups",
+                result["data"]["embodiment_datasets"]["robodojo"],
+            )
+            self.assertEqual(result["data"]["action_size"], 16)
+            self.assertEqual(
+                result["model"]["model_arch"]["hf_processor_path"],
+                "${oc.env:G05_HF_PROCESSOR_PATH}",
+            )
+            self.assertEqual(result["logger"], {"type": "wandb", "mode": "disabled"})
+
+    def test_worker_installer_uploads_g05_inference_preparer(self):
+        args = SimpleNamespace(host="XYZ4090", remote_work_root="/remote/jobs")
+        with (
+            mock.patch.object(remote_recap, "_remote"),
+            mock.patch.object(remote_recap, "_scp") as scp,
+        ):
+            remote_recap._install_worker(args)
+
+        destinations = [call.args[2] for call in scp.call_args_list]
+        self.assertTrue(
+            any(
+                "prepare_g05_inference_checkpoint.py.tmp-" in destination
+                for destination in destinations
+            )
+        )
+
+
     def test_local_host_aliases_are_not_sent_to_ssh(self):
         self.assertTrue(remote_recap._is_local_host("local"))
         self.assertTrue(remote_recap._is_local_host("localhost"))
@@ -82,6 +174,57 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
             )
             extract = remote.call_args_list[-2].args[1]
             self.assertEqual(extract[-2:], ["-C", str(destination)])
+
+    def test_g05_rollout_forwards_remote_processor_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            processor = "/remote/GalaxeaVLA/checkpoints/processor"
+            args = SimpleNamespace(
+                action="rollout",
+                host="XYZ4090",
+                remote_repo_root="/remote/RoboDojo",
+                remote_work_root="/remote/jobs",
+                job_id="task-iter-01",
+                checkpoint=str(root / "checkpoint"),
+                output=str(root / "rollouts"),
+                policy="g05",
+                g05_root="/remote/GalaxeaVLA",
+                g05_processor_path=processor,
+                g05_action_source="fm",
+                task="general_pickup",
+                episodes=3,
+                layout_seed=0,
+                layout_offset=0,
+                policy_gpu=0,
+                env_gpu=1,
+                env_cfg="arx_x5",
+                action_type="joint",
+                policy_env="/remote/GalaxeaVLA/.venv",
+                eval_env="/remote/RoboDojo",
+            )
+
+            with (
+                mock.patch.object(remote_recap, "_validate"),
+                mock.patch.object(
+                    remote_recap, "_remote_success", side_effect=[False, False]
+                ),
+                mock.patch.object(remote_recap, "_reserve_remote_gpus"),
+                mock.patch.object(remote_recap, "_install_worker", return_value="worker"),
+                mock.patch.object(remote_recap, "_package_checkpoint"),
+                mock.patch.object(remote_recap, "_remote"),
+                mock.patch.object(remote_recap, "_scp"),
+                mock.patch.object(remote_recap, "_worker_environment", return_value={}),
+                mock.patch.object(remote_recap, "_invoke_worker") as invoke,
+                mock.patch.object(remote_recap, "_extract"),
+                mock.patch.object(remote_recap, "_cancel_remote_job"),
+            ):
+                remote_recap.rollout(args)
+
+            environment = invoke.call_args.args[2]
+            self.assertEqual(
+                environment["RECAP_REMOTE_G05_PROCESSOR_PATH"],
+                processor,
+            )
 
     def test_value_video_rebuilds_missing_remote_rollout_cache(self):
         with tempfile.TemporaryDirectory() as directory:

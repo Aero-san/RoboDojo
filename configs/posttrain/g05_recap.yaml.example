@@ -56,6 +56,7 @@ rollout:
     repo_root: /absolute/path/to/RoboDojo
     work_root: /absolute/path/to/recap_rollout_jobs
     g05_root: /absolute/path/to/GalaxeaVLA
+    g05_processor_path: /absolute/path/to/GalaxeaVLA/checkpoints/qwen3_5_2b_base_processor
     zstd: zstd
     conda: conda
     python: /absolute/path/to/robodojo-python
