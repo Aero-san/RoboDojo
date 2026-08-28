@@ -47,8 +47,9 @@ def main(args: argparse.Namespace) -> None:
     if args.old_episode_count < 0 or args.replay_episodes < 0:
         raise ValueError("Episode counts must be non-negative.")
 
-    info = _json(source / "meta/info.json")
-    episodes = _jsonl(source / "meta/episodes.jsonl")
+    layout = replay.LeRobotLayout(source, "v2.1")
+    info = layout.info
+    episodes = layout.episodes()
     provenance = _jsonl(source / "meta/provenance.jsonl")
     labels = {int(key): bool(value) for key, value in _json(source / "meta/success_labels.json").items()}
     total = int(info.get("total_episodes", -1))
@@ -107,7 +108,7 @@ def main(args: argparse.Namespace) -> None:
         parquet.write_table(table, output_path)
 
         for camera in replay.CAMERAS:
-            video = replay._video_source(source, info, source_episode, camera)
+            video = replay._video_source(layout, metadata, camera)
             replay._link(
                 video,
                 output

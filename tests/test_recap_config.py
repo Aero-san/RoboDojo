@@ -7,13 +7,14 @@ import unittest
 
 import yaml
 
-from scripts.posttrain.pi05_recap_config import resolve
+from scripts.posttrain.recap_config import resolve
 
 ROOT = Path(__file__).resolve().parents[1]
+G05_EXAMPLE = ROOT / "configs/posttrain/g05_recap.yaml.example"
 EXAMPLE = ROOT / "configs/posttrain/pi05_recap.yaml.example"
 
 
-class Pi05RecapConfigTest(unittest.TestCase):
+class RecapConfigTest(unittest.TestCase):
     def _resolve_payload(self, payload):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.yaml"
@@ -41,7 +42,7 @@ class Pi05RecapConfigTest(unittest.TestCase):
     def test_fsdp_axis_must_divide_gpu_count(self):
         payload = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
         payload = deepcopy(payload)
-        payload["devices"]["pi05_train"] = [0, 1, 2]
+        payload["devices"]["policy_train"] = [0, 1, 2]
         payload["pi05"]["fsdp_devices"] = 2
         with self.assertRaisesRegex(ValueError, "fsdp_devices"):
             self._resolve_payload(payload)
@@ -76,25 +77,25 @@ class Pi05RecapConfigTest(unittest.TestCase):
                 "host": "train4090",
                 "repo_root": "/share/user/RoboDojo",
                 "work_root": "/share/user/recap_remote_jobs",
-                "pi05_gpus": [4, 5],
+                "policy_gpus": [4, 5],
                 "wcm_gpus": [6, 7],
             }
         )
         _, environment = self._resolve_payload(payload)
         self.assertEqual(environment["RECAP_TRAINING_REMOTE_HOST"], "train4090")
-        self.assertEqual(environment["RECAP_TRAINING_REMOTE_PI05_GPUS"], "4,5")
+        self.assertEqual(environment["RECAP_TRAINING_REMOTE_POLICY_GPUS"], "4,5")
         self.assertEqual(environment["RECAP_TRAINING_REMOTE_WCM_GPUS"], "6,7")
 
     def test_remote_gpu_count_replaces_local_count_for_pi_validation(self):
         payload = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
-        payload["devices"]["pi05_train"] = [0, 1, 2]
+        payload["devices"]["policy_train"] = [0, 1, 2]
         payload["training"]["remote"].update(
             {
                 "enabled": True,
                 "host": "train4090",
                 "repo_root": "/share/user/RoboDojo",
                 "work_root": "/share/user/recap_remote_jobs",
-                "pi05_gpus": [4, 5],
+                "policy_gpus": [4, 5],
             }
         )
         _, environment = self._resolve_payload(payload)
@@ -111,6 +112,40 @@ class Pi05RecapConfigTest(unittest.TestCase):
         payload["pi05"]["optimizer"]["learning_rate"] = 0
         with self.assertRaisesRegex(ValueError, "learning_rate must be positive"):
             self._resolve_payload(payload)
+
+    def test_g05_example_resolves_v3_runtime(self):
+        resolved, environment = resolve(G05_EXAMPLE)
+        self.assertEqual(resolved["policy"]["name"], "g05")
+        self.assertEqual(resolved["data"]["format"], "v3.0")
+        self.assertEqual(environment["ROBODOJO_G05_ACTION_SOURCE"], "fm")
+        self.assertEqual(environment["RECAP_TRAINING_REMOTE_POLICY_GPUS"], "0,1,2,3")
+        self.assertEqual(environment["G05_DECAY_LEARNING_RATE"], "1e-06")
+        self.assertEqual(environment["G05_DECAY_START_RATIO"], "0.5")
+
+    def test_g05_rejects_v21_input(self):
+        payload = yaml.safe_load(G05_EXAMPLE.read_text(encoding="utf-8"))
+        payload["data"]["format"] = "v2.1"
+        with self.assertRaisesRegex(ValueError, "requires data.format: v3.0"):
+            self._resolve_payload(payload)
+
+    def test_g05_rejects_ar_action_source(self):
+        payload = yaml.safe_load(G05_EXAMPLE.read_text(encoding="utf-8"))
+        payload["g05"]["action_source"] = "ar"
+        with self.assertRaisesRegex(ValueError, "requires g05.action_source: fm"):
+            self._resolve_payload(payload)
+
+    def test_g05_rejects_decay_rate_above_initial_rate(self):
+        payload = yaml.safe_load(G05_EXAMPLE.read_text(encoding="utf-8"))
+        payload["g05"]["optimizer"]["decay_learning_rate"] = 2.0e-5
+        with self.assertRaisesRegex(ValueError, "decay_learning_rate"):
+            self._resolve_payload(payload)
+
+    def test_g05_rejects_decay_before_warmup_finishes(self):
+        payload = yaml.safe_load(G05_EXAMPLE.read_text(encoding="utf-8"))
+        payload["g05"]["optimizer"]["decay_start_ratio"] = 0.1
+        with self.assertRaisesRegex(ValueError, "before warmup"):
+            self._resolve_payload(payload)
+
 
 
 if __name__ == "__main__":

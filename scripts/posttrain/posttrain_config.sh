@@ -46,10 +46,10 @@ load_posttrain_config() {
   rm -f "${config_dump}"
 }
 
-load_pi05_recap_config() {
+load_recap_config() {
   local config_path="$1"
   [[ -n "${config_path}" ]] || {
-    echo "Pi0.5 RECAP requires --config PATH" >&2
+    echo "RECAP requires --config PATH" >&2
     return 2
   }
   [[ -f "${config_path}" ]] || { echo "Post-training config not found: ${config_path}" >&2; return 1; }
@@ -59,8 +59,8 @@ load_pi05_recap_config() {
     return 1
   }
   local config_dump
-  config_dump=$(mktemp "${TMPDIR:-/tmp}/robodojo-pi05-recap-config.XXXXXX")
-  if ! "${python_bin}" "${SCRIPT_DIR}/pi05_recap_config.py" "${config_path}" >"${config_dump}"; then
+  config_dump=$(mktemp "${TMPDIR:-/tmp}/robodojo-recap-config.XXXXXX")
+  if ! "${python_bin}" "${SCRIPT_DIR}/recap_config.py" "${config_path}" >"${config_dump}"; then
     rm -f "${config_dump}"
     return 1
   fi
@@ -74,10 +74,10 @@ load_pi05_recap_config() {
   rm -f "${config_dump}"
 }
 
-write_resolved_pi05_recap_config() {
+write_resolved_recap_config() {
   local config_path="$1"
   local output_path="$2"
   local python_bin="${POSTTRAIN_CONFIG_PYTHON:-${ROOT_DIR}/external_dependencies/WCM/.venv/bin/python}"
-  "${python_bin}" "${SCRIPT_DIR}/pi05_recap_config.py" "${config_path}" \
+  "${python_bin}" "${SCRIPT_DIR}/recap_config.py" "${config_path}" \
     --format yaml --output "${output_path}"
 }

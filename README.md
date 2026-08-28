@@ -126,24 +126,21 @@ policy/Isaac workers, so eight listed GPUs create four workers and four GPUs
 create two. Each Isaac worker also runs multiple vectorized environments, and
 layout shards prevent duplicate episodes across workers.
 
-For iterative simulator experience, use the off-policy WCM + RECAP pipeline:
+For iterative simulator experience, use the model-selectable WCM + RECAP
+pipeline:
 
 ```bash
-TASK_NAME=stack_bowls \
-INITIAL_POLICY_CHECKPOINT=$PWD/XPolicyLab/policy/Pi_05/checkpoints/my_sft/59999 \
-bash scripts/posttrain/run_pi05_recap.sh
+# Pi0.5 template
+bash scripts/posttrain/run_recap.sh --config configs/posttrain/pi05_recap.yaml.example
+
+# Active G05 remote-training configuration
+bash remote_training.sh
 ```
 
-The first iteration uses successful SFT demonstrations only. It updates WCM,
-computes globally normalized RECAP advantages, updates Pi0.5 with the explicit
-unconditional-plus-conditioned flow-matching objective, and then collects
-success/failure-labelled RoboDojo rollouts for the next iteration. The policy
-is carried forward between rounds. WCM uses one DDP process per
-`WCM_TRAIN_GPUS` entry, while OpenPI uses every `TRAIN_GPUS` entry in its
-data-parallel/FSDP mesh. A single stateful rollout cannot be sharded, but its
-policy server and Isaac Sim can use separate `POLICY_GPU` and `ENV_GPU` cards.
-Detailed configuration and evaluation
-commands are in
+Every iteration collects labelled RoboDojo rollouts, updates WCM, computes
+globally normalized RECAP advantages, and trains the selected policy. Pi0.5
+and G05 use separate conditioning/training adapters over the same replay and
+remote orchestration. Detailed configuration is in
 [`scripts/README.md`](scripts/README.md#off-policy-wcm--recap).
 
 Direct fine-tuning uses `PI05_FINETUNE_MODE` to select the trainable Pi0.5

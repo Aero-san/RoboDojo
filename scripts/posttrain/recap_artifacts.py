@@ -39,7 +39,7 @@ def _check_advantages(path: Path) -> bool:
     return len(rows) > 1 and rows[0].get("type") == "recap_advantages"
 
 
-def _check_pi_dataset(path: Path, expected: int) -> bool:
+def _check_policy_dataset(path: Path, expected: int) -> bool:
     complete = (
         (path / "meta/info.json").is_file()
         and (path / "meta/stats.json").is_file()
@@ -51,7 +51,28 @@ def _check_pi_dataset(path: Path, expected: int) -> bool:
     return expected <= 0 or int(_json(path / "meta/info.json").get("total_episodes", -1)) == expected
 
 
-def _check_policy(path: Path, expected: int) -> bool:
+def _g05_checkpoints(path: Path) -> list[Path]:
+    if not path.is_dir():
+        return []
+    candidates = list((path / "checkpoints").glob("step_*.pt"))
+    candidates.extend(candidate for candidate in (path / "last.pt",) if candidate.is_file())
+    return candidates
+
+
+def _g05_step(path: Path) -> int:
+    try:
+        return int(path.stem.removeprefix("step_"))
+    except ValueError:
+        return 0
+
+
+def _check_policy(path: Path, expected: int, policy: str) -> bool:
+    if policy == "g05":
+        required = ("robodojo_g05_model.json", ".hydra/config.yaml", "dataset_stats.json", "action_tokenizer.pt")
+        if not all((path / item).is_file() for item in required):
+            return False
+        checkpoints = _g05_checkpoints(path)
+        return bool(checkpoints) and (expected <= 0 or max(map(_g05_step, checkpoints)) >= expected - 1)
     if not (path / "robodojo_pi05_model.json").is_file():
         return False
     checkpoints = [
@@ -72,7 +93,9 @@ def _check_policy(path: Path, expected: int) -> bool:
     return any(checkpoints)
 
 
-def _check_policy_resume(path: Path) -> bool:
+def _check_policy_resume(path: Path, policy: str) -> bool:
+    if policy == "g05":
+        return bool(_g05_checkpoints(path))
     return any(
         child.is_dir()
         and (child / "params").is_dir()
@@ -115,7 +138,7 @@ def _check_fingerprint(path: Path, stage: str, fingerprint: str) -> bool:
     return state.get("stage") == stage and state.get("fingerprint") == fingerprint
 
 
-def check(stage: str, path: Path, expected: int, fingerprint: str = "") -> bool:
+def check(stage: str, path: Path, expected: int, fingerprint: str = "", policy: str = "pi05") -> bool:
     if not _check_fingerprint(path, stage, fingerprint):
         return False
     if stage == "buffer":
@@ -124,17 +147,24 @@ def check(stage: str, path: Path, expected: int, fingerprint: str = "") -> bool:
         return (path / "deploy.pt").is_file()
     if stage == "advantages":
         return _check_advantages(path)
-    if stage == "pi_dataset":
-        return _check_pi_dataset(path, expected)
+    if stage == "policy_dataset":
+        return _check_policy_dataset(path, expected)
     if stage == "norm":
+        if policy == "g05":
+            return (
+                (path / "norm_stats.json").is_file()
+                and (path / "dataset_stats.json").is_file()
+                and (path / "action_tokenizer.pt").is_file()
+                and not (path / ".incremental_update_in_progress").exists()
+            )
         return (
             (path / "norm_stats.json").is_file()
             and not (path / ".incremental_update_in_progress").exists()
         )
     if stage == "policy":
-        return _check_policy(path, expected)
+        return _check_policy(path, expected, policy)
     if stage == "policy_resume":
-        return _check_policy_resume(path)
+        return _check_policy_resume(path, policy)
     if stage == "rollout":
         return _check_rollout(path, expected)
     if stage == "value_videos":
@@ -207,7 +237,7 @@ def main(args: argparse.Namespace) -> None:
             raise SystemExit(1)
         return
     if args.command == "check":
-        if not check(args.stage, path, args.expected, args.fingerprint):
+        if not check(args.stage, path, args.expected, args.fingerprint, args.policy):
             raise SystemExit(1)
         return
     if args.command == "mark":
@@ -224,6 +254,7 @@ if __name__ == "__main__":
     checker.add_argument("--path", required=True)
     checker.add_argument("--expected", type=int, default=0)
     checker.add_argument("--fingerprint", default="")
+    checker.add_argument("--policy", choices=("pi05", "g05"), required=True)
     marker = subparsers.add_parser("mark")
     marker.add_argument("--stage", required=True)
     marker.add_argument("--path", required=True)

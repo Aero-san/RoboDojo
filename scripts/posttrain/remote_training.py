@@ -18,9 +18,10 @@ import tempfile
 from types import SimpleNamespace
 
 try:  # Running as ``python scripts/posttrain/remote_training.py``.
+    import g05_remote
     import remote_recap
 except ModuleNotFoundError:  # Running as ``python -m scripts.posttrain.remote_training``.
-    from . import remote_recap
+    from . import g05_remote, remote_recap
 
 
 MARKER_PREFIX = "@"
@@ -64,9 +65,7 @@ def _upload_directory(backend: SimpleNamespace, local: Path, destination: str) -
     destination = Path(destination)
     with tempfile.TemporaryDirectory(prefix="robodojo-remote-stage-") as temporary:
         archive = Path(temporary) / "input.tar.zst"
-        remote_recap._run(
-            ["tar", "--zstd", "-cf", str(archive), "-C", str(local), "."]
-        )
+        remote_recap._run(["tar", "--zstd", "-cf", str(archive), "-C", str(local), "."])
         remote_recap._remote(backend, ["rm", "-rf", str(destination)])
         remote_recap._remote(backend, ["mkdir", "-p", str(destination)])
         remote_archive = f"{destination}.tar.zst"
@@ -181,9 +180,7 @@ def _run_stage(
         return
 
     try:
-        remote_recap._reserve_remote_gpus(
-            backend, job_root, [int(value) for value in gpu_ids.split(",")]
-        )
+        remote_recap._reserve_remote_gpus(backend, job_root, [int(value) for value in gpu_ids.split(",")])
         remote_recap._remote(backend, ["mkdir", "-p", f"{job_root}/inputs"])
         if resume_output and output.exists():
             _upload_directory(backend, output, remote_output)
@@ -191,13 +188,9 @@ def _run_stage(
             remote_recap._remote(backend, ["rm", "-rf", remote_output])
             remote_recap._remote(backend, ["mkdir", "-p", remote_output])
         remote_inputs = _stage_inputs(backend, job_root, directory_inputs, file_inputs)
-        expanded_command = _expand(
-            command, job_root, args.remote_repo_root, remote_inputs, remote_output
-        )
+        expanded_command = _expand(command, job_root, args.remote_repo_root, remote_inputs, remote_output)
         expanded_environment = {
-            name: _expand(
-                value, job_root, args.remote_repo_root, remote_inputs, remote_output
-            )
+            name: _expand(value, job_root, args.remote_repo_root, remote_inputs, remote_output)
             for name, value in (environment or {}).items()
         }
         expanded_environment.update(
@@ -213,9 +206,7 @@ def _run_stage(
         worker = remote_recap._install_worker(backend)
         environment_for_worker = remote_recap._worker_environment(backend, job_root, "run")
         environment_for_worker.update(expanded_environment)
-        remote_recap._invoke_worker(
-            backend, worker, environment_for_worker, isolated_process_group=True
-        )
+        remote_recap._invoke_worker(backend, worker, environment_for_worker, isolated_process_group=True)
         _download_result(backend, result_archive, output, output_kind)
     finally:
         remote_recap._cancel_remote_job(backend, job_root)
@@ -228,7 +219,7 @@ def _common_stage_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--remote-zstd-bin", default="zstd")
     parser.add_argument("--remote-conda-bin", default="conda")
     parser.add_argument("--remote-python-bin", default="python")
-    parser.add_argument("--remote-pi-python", default="")
+    parser.add_argument("--remote-policy-python", default="")
     parser.add_argument("--remote-wcm-python", default="")
     parser.add_argument("--gpu-reservation", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--gpu-reservation-leave-free-mib", type=int, default=2048)
@@ -241,8 +232,13 @@ def _add_stage_identity(parser: argparse.ArgumentParser) -> None:
 
 
 def _remote_python(args: argparse.Namespace, kind: str) -> str:
-    explicit = args.remote_pi_python if kind == "pi" else args.remote_wcm_python
-    return explicit or f"{args.remote_repo_root}/{'XPolicyLab/policy/Pi_05/openpi/.venv/bin/python' if kind == 'pi' else 'external_dependencies/WCM/.venv/bin/python'}"
+    if kind == "wcm":
+        return args.remote_wcm_python or f"{args.remote_repo_root}/external_dependencies/WCM/.venv/bin/python"
+    if args.remote_policy_python:
+        return args.remote_policy_python
+    if kind == "pi05":
+        return f"{args.remote_repo_root}/XPolicyLab/policy/Pi_05/openpi/.venv/bin/python"
+    raise ValueError("G05 remote training requires training.remote.policy_python")
 
 
 def run_wcm(args: argparse.Namespace) -> None:
@@ -251,7 +247,9 @@ def run_wcm(args: argparse.Namespace) -> None:
     init_checkpoint = Path(args.init_checkpoint).expanduser().resolve() if args.init_checkpoint else None
     output = Path(args.output).expanduser().resolve()
     remote_python = _remote_python(args, "wcm")
-    command = "bash " + shlex.quote(f"{args.remote_repo_root}/scripts/posttrain/run_wcm.sh") + ' --task "$WCM_TASK_NAME"'
+    command = (
+        "bash " + shlex.quote(f"{args.remote_repo_root}/scripts/posttrain/run_wcm.sh") + ' --task "$WCM_TASK_NAME"'
+    )
     environment = {
         "PYTHON_BIN": remote_python,
         "WCM_CONFIG": "@input/config",
@@ -374,7 +372,9 @@ def run_pi05(args: argparse.Namespace) -> None:
             break
     if not repo_id or Path(repo_id).name != repo_id:
         raise ValueError("Pi0.5 train args must contain a simple --repo-id value")
-    command = shlex.join([_remote_python(args, "pi"), f"{args.remote_repo_root}/scripts/posttrain/train_pi05.py", *train_args])
+    command = shlex.join(
+        [_remote_python(args, "pi05"), f"{args.remote_repo_root}/scripts/posttrain/train_pi05.py", *train_args]
+    )
     environment = {
         "HF_LEROBOT_HOME": "@job/inputs/lerobot",
         "CUDA_VISIBLE_DEVICES": args.gpus,
@@ -446,9 +446,9 @@ def preflight(args: argparse.Namespace) -> None:
     remote_recap.preflight(backend)
     checks = (
         (
-            "Pi0.5 Python",
-            _remote_python(args, "pi"),
-            f"Set training.remote.pi_python to an executable Python on {args.host}.",
+            f"{args.policy} Python",
+            _remote_python(args, args.policy),
+            f"Set training.remote.policy_python to an executable Python on {args.host}.",
         ),
         (
             "WCM Python",
@@ -463,19 +463,24 @@ def preflight(args: argparse.Namespace) -> None:
             print(f"[RECAP remote training] OK: {label} ({executable})", flush=True)
         else:
             failures.append(f"{label} is not executable: {executable}\n  Fix: {fix}")
-    for label, path in (
+    policy_trainer = (
+        ("Pi0.5 trainer", f"{args.remote_repo_root}/scripts/posttrain/train_pi05.py")
+        if args.policy == "pi05"
+        else ("G05 trainer", f"{args.remote_repo_root}/scripts/posttrain/train_g05.py")
+    )
+    trainer_checks = [
         ("WCM trainer", f"{args.remote_repo_root}/scripts/posttrain/run_wcm.sh"),
-        ("Pi0.5 trainer", f"{args.remote_repo_root}/scripts/posttrain/train_pi05.py"),
-    ):
-        result = remote_recap._remote_result(
-            backend, ["sh", "-c", 'test -f "$1" && test -r "$1"', "sh", path]
-        )
+        policy_trainer,
+    ]
+    if args.policy == "g05":
+        trainer_checks.append(("G05 upstream trainer", f"{args.g05_root}/scripts/finetune.py"))
+    for label, path in trainer_checks:
+        result = remote_recap._remote_result(backend, ["sh", "-c", 'test -f "$1" && test -r "$1"', "sh", path])
         if result.returncode == 0:
             print(f"[RECAP remote training] OK: {label} ({path})", flush=True)
         else:
             failures.append(
-                f"{label} is missing or unreadable: {path}\n"
-                "  Fix: synchronize the remote RoboDojo checkout."
+                f"{label} is missing or unreadable: {path}\n  Fix: synchronize the remote RoboDojo checkout."
             )
     if failures:
         raise RuntimeError("Remote training preflight failed:\n" + "\n".join(failures))
@@ -487,6 +492,8 @@ def main() -> None:
     preflight_parser = subparsers.add_parser("preflight")
     _common_stage_parser(preflight_parser)
     preflight_parser.add_argument("--gpu", action="append", type=int, default=[])
+    preflight_parser.add_argument("--policy", choices=("pi05", "g05"), required=True)
+    preflight_parser.add_argument("--g05-root", default="")
     preflight_parser.set_defaults(function=preflight)
 
     wcm_parser = subparsers.add_parser("wcm")
@@ -556,6 +563,8 @@ def main() -> None:
     render_parser.add_argument("--y-min", required=True)
     render_parser.add_argument("--y-max", required=True)
     render_parser.add_argument("--title", required=True)
+    g05_remote.add_parser(subparsers, _common_stage_parser, _add_stage_identity, _run_stage)
+
     render_parser.set_defaults(function=run_render)
 
     args = parser.parse_args()

@@ -1,8 +1,7 @@
-"""Read RoboDojo's local LeRobot-v2.1 video dataset for the official WCM.
+"""Read RoboDojo's internal LeRobot-v2.1 replay dataset for the official WCM.
 
-The released WCM trainer uses ``lerobot>=0.5.1`` and canonical LeRobot v3
-metadata, while RoboDojo distributes a compact v2.1 export.  This module
-implements the small dataset interface consumed by
+The ingestion layer normalizes each supported source format into this internal
+layout. This module implements the small dataset interface consumed by
 ``external_dependencies/WCM/world_critic/data.py`` so the official WCM model
 and trainer can run against RoboDojo files directly without mutating the
 downloaded dataset.
@@ -242,6 +241,9 @@ _TASK_SELECTOR_HINTS = {
     "swap_blocks": {"empty", "mat", "button"},
     "swap_t": {"t", "shaped", "orientation"},
 }
+_MULTI_INSTRUCTION_HINTS = {
+    "general_pickup": {"pick", "up"},
+}
 
 
 def _task_selector_tokens(value: str) -> set[str]:
@@ -322,6 +324,12 @@ def filter_episode_metadata(
             matches = [task_map[int(requested_slug)]]
         else:
             matches = [text for text in candidates if _task_slug(text) == requested_slug]
+    multi_hint = _MULTI_INSTRUCTION_HINTS.get(requested_slug.removesuffix("_random"))
+    if not matches and multi_hint is not None:
+        matches = [
+            text for text in candidates
+            if multi_hint <= set(_task_slug(text).split("_"))
+        ]
     if not matches and selector_hint is None:
         requested_tokens = set(_task_slug(requested).split("_")) - {""}
         matches = [
@@ -332,7 +340,7 @@ def filter_episode_metadata(
     if not matches:
         # Canonical RoboDojo names and metadata instructions use different
         # verbs (``fill`` vs ``place``, ``put`` vs ``throw``) and sometimes
-        # different grammatical forms (``bottles`` vs ``bottle``).  Match on
+        # different grammatical forms (``bottles`` vs ``bottle``). Match on
         # the distinctive content words as a final, deterministic step.
         requested_tokens = selector_hint or _task_selector_tokens(requested)
         scored = [
@@ -343,22 +351,23 @@ def filter_episode_metadata(
         best_candidates = [text for score, text in scored if score == best_score]
         if best_score >= 2 or (best_score == 1 and len(best_candidates) == 1):
             matches = best_candidates
-    if len(matches) != 1:
+    if not matches:
         available = "; ".join(candidates[:12])
-        if len(matches) > 1:
-            raise ValueError(
-                f"Task selector {selector!r} is ambiguous; matches={matches}. "
-                "Use the complete task instruction."
-            )
         raise ValueError(
             f"Task selector {selector!r} did not match RoboDojo metadata. "
             f"Available examples: {available}"
         )
-    selected_text = matches[0]
+    if len(matches) > 1 and multi_hint is None:
+        raise ValueError(
+            f"Task selector {selector!r} is ambiguous; matches={matches}. "
+            "Use the complete task instruction."
+        )
+    selected_text = matches[0] if len(matches) == 1 else requested
+    matched_texts = set(matches)
     selected = [
         episode
         for episode in episodes
-        if _episode_task_text(episode, task_map) == selected_text
+        if _episode_task_text(episode, task_map) in matched_texts
     ]
     if not selected:
         raise ValueError(f"Task selector {selector!r} matched no episodes.")
@@ -472,6 +481,11 @@ class RoboDojoDataset:
     ) -> None:
         self.root = _resolve_root(root, repo_id)
         self.info = _load_json(self.root / "meta" / "info.json")
+        if self.info.get("codebase_version") != "v2.1":
+            raise ValueError(
+                "RoboDojoDataset reads only the normalized internal LeRobot v2.1 layout; "
+                f"{self.root / 'meta/info.json'} declares {self.info.get('codebase_version')!r}."
+            )
         self.chunks_size = int(self.info.get("chunks_size", 1000))
         self.task_fallback = self.root.parent.parent.name
         source_task_map = _task_map(self.root, self.task_fallback)

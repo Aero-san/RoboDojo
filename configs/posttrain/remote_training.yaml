@@ -1,33 +1,35 @@
-schema_version: 1
+schema_version: 2
+
+policy:
+  name: g05
 
 run:
-  task: put_bottles_into_dustbin
-  output_root: outputs/recap_remote
-  iterations: 20
-  resume: true
-  # The first iteration is already complete; retain it even though execution
-  # paths and downstream evaluation behavior changed after it was produced.
-  reuse_completed_artifacts: true
+  task: general_pickup
+  output_root: outputs/recap_g05_remote
+  iterations: 10
+  resume: false
+  reuse_completed_artifacts: false
   seed: 0
 
 environment:
   env_cfg: arx_x5
   action_type: joint
-  policy_env: openpi
-  eval_env: RoboDojo
+  policy_env: /share/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv
+  eval_env: /mnt/cpfs-E/mingyang/miniconda3/envs/RoboDojo
 
 checkpoints:
-  initial_policy: /mnt/cpfs-E/mingyang/RoboDojo/XPolicyLab/policy/Pi_05/checkpoints/RoboDojo-put_bottles_into_dustbin-arx_x5-joint-0/11999
+  initial_policy: XPolicyLab/policy/G05/checkpoints/hf_g05_robodojo_fm_only_checkpoint
   initial_wcm: outputs/wcm/robodojo_pi05/deploy.pt
 
 data:
-  demo_root: data/RoboDojo_lerobot_v21_video
-  max_demo_episodes: 100
+  format: v3.0
+  demo_root: data/pickup_video
+  max_demo_episodes: 44
   mode: video
   norm_asset_id: null
 
 devices:
-  pi05_train: [0,1,2,3]
+  policy_train: [0,1,2,3]
   wcm_train: [0,1,2,3]
   rollout_policy: 0
   rollout_environment: 1
@@ -39,7 +41,7 @@ devices:
     remote_max_hold_seconds: 1800
 
 rollout:
-  episodes: 25
+  episodes: 30
   layout_seed: 0
   minimum:
     total: 20
@@ -50,28 +52,29 @@ rollout:
     host: XYZ4090
     repo_root: /share/mingyang/RoboDojo
     work_root: /share/mingyang/recap_remote_jobs
-    zstd: /usr/local/bin/zstd
+    zstd: /usr/bin/zstd
     conda: /share/mingyang/miniconda3/bin/conda
     python: /share/mingyang/miniconda3/envs/RoboDojo/bin/python
     policy_gpu: 0
     environment_gpu: 1
     value_video_gpu: 0
     policy_evaluation: true
+    g05_root: /share/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA
 
 training:
   # Explicit opt-in. Set host to `local` to execute on this machine, or to
   # an SSH config alias/hostname to execute on another machine.
   remote:
-    enabled: true
+    enabled: false
     host: XYZ6226
     repo_root: /mnt/data-cpfs/mingyang/RoboDojo
     work_root: /mnt/data-cpfs/mingyang/RoboDojo/recap_remote_jobs
-    zstd: /usr/bin/zstd
+    zstd: /usr/local/bin/zstd
     conda: /mnt/data-cpfs/mingyang/miniconda3/bin/conda
     python: /mnt/data-cpfs/mingyang/miniconda3/envs/RoboDojo/bin/python
-    pi_python: /mnt/data-cpfs/mingyang/RoboDojo/XPolicyLab/policy/Pi_05/openpi/.venv/bin/python
+    policy_python: /mnt/data-cpfs/mingyang//RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv/bin/python
     wcm_python: /mnt/data-cpfs/mingyang/RoboDojo/external_dependencies/WCM/.venv/bin/python
-    pi05_gpus: [0, 1,2,3]
+    policy_gpus: [0, 1,2,3]
     wcm_gpus: [0, 1,2,3]
     value_video_gpu: 0
     render_value_video: true
@@ -80,7 +83,7 @@ wcm:
   train:
     config: configs/wcm/robodojo_pi05.yaml
     epochs: 2
-    replay_episodes: 50
+    replay_episodes: 30
     per_device_batch_size: 96
     num_workers: 8
     precision: bf16
@@ -103,39 +106,35 @@ recap:
     demonstrations: 1.0
     rollouts: 1.0
 
-pi05:
-  train_config: pi05_base_aloha_full_sim_arx-x5_seed_0
-  finetune_mode: all_lora
-  steps: 500
-  batch_size: 64
+g05:
+  # Upstream GalaxeaVLA checkout on the remote training host.
+  root: /mnt/cpfs-E/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA
+  task_config: robodojo_recap
+  processor_path: checkpoints/qwen3_5_2b_base_processor
+  action_tokenizer: null
+  action_source: fm
+  steps: 5000
+  batch_size: 128
   num_workers: 8
-  parameter_dtype: float32
-  sharding_strategy: no_shard
-  fsdp_devices: 2
-  cpu_offload: false
-  ema_decay: 0.99
-  action_expert_variant: null
-  paligemma_variant: null
-  xla_memory_fraction: 0.9
+  grad_accumulation_steps: 1
   wandb_enabled: true
-  log_interval: 50
   optimizer:
-    learning_rate: 5.0e-6
-    warmup_steps: 50
-    decay_lr: 1.0e-7
-    weight_decay: 1.0e-10
-    clip_gradient_norm: 1.0
+    learning_rate: 1.0e-5
+    warmup_steps: 500
+    decay_learning_rate: 1.0e-7
+    decay_start_ratio: 0.2
+    weight_decay: 0.0001
 
 evaluation:
-  interval: 100
-  episodes: 10
+  interval: 2000
+  episodes: 30
   reuse_rollout: true
   layout_seed: 1
   layout_offset: 0
 
 value_video:
   episodes: 3
-  batch_size: 16
+  batch_size: 96
   device: cuda
   precision: fp32
   backend: auto
@@ -144,6 +143,7 @@ value_video:
   y_max: 1.0
 
 runtime:
-  pi_python: null
-  wcm_python: null
+  policy_python: /mnt/cpfs-E/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv/bin/python
+  data_python: XPolicyLab/policy/Pi_05/openpi/.venv/bin/python
+  wcm_python: /mnt/cpfs-E/mingyang/miniconda3/envs/RoboDojo/bin/python
   policy_dir: null

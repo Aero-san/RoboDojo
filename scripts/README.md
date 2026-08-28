@@ -16,14 +16,14 @@
 | [posttrain/finetune_pi05_with_wcm.sh](posttrain/finetune_pi05_with_wcm.sh) | WCM-selected OpenPI Pi0.5 fine-tuning |
 | [posttrain/train_pi05.py](posttrain/train_pi05.py) | OpenPI Pi0.5 fine-tuning with explicit freeze modes |
 | [posttrain/select_wcm_episodes.py](posttrain/select_wcm_episodes.py) | Rank/filter demonstrations with a trained WCM |
-| [posttrain/run_pi05_recap.sh](posttrain/run_pi05_recap.sh) | Iterated simulator rollout + WCM + RECAP Pi0.5 training |
+| [posttrain/run_recap.sh](posttrain/run_recap.sh) | Model-selectable simulator rollout + WCM + RECAP training |
 | [posttrain/render_rollout_value_videos.py](posttrain/render_rollout_value_videos.py) | Score rollout frames with WCM and render official value overlays |
 | [posttrain/remote_training.py](posttrain/remote_training.py) | Transfer and execute GPU-bound RECAP stages on a local or SSH host |
 | [posttrain/build_replay_buffer.py](posttrain/build_replay_buffer.py) | Aggregate SFT demonstrations and labelled policy rollouts |
 | [posttrain/build_replay_buffer_incremental.py](posttrain/build_replay_buffer_incremental.py) | Reuse a preceding RECAP buffer and append one rollout round |
 | [posttrain/build_wcm_training_subset.py](posttrain/build_wcm_training_subset.py) | Sample old replay episodes and combine them with every newly appended episode for one WCM update |
 | [posttrain/annotate_recap_advantages.py](posttrain/annotate_recap_advantages.py) | Compute WCM N-step advantages and RECAP conditions |
-| [posttrain/prepare_pi05_recap_dataset.py](posttrain/prepare_pi05_recap_dataset.py) | Incrementally append RECAP rollouts and refresh Pi0.5 conditions |
+| [posttrain/prepare_recap_dataset.py](posttrain/prepare_recap_dataset.py) | Incrementally append rollouts and refresh model-specific RECAP conditions |
 | [posttrain/compute_pi05_norm_stats_incremental.py](posttrain/compute_pi05_norm_stats_incremental.py) | Continue Pi0.5 normalization from a serialized running accumulator |
 
 ## Pi0.5 post-training options
@@ -161,235 +161,88 @@ bash scripts/robodojo.sh eval \
 
 ## Off-policy WCM + RECAP
 
-`run_pi05_recap.sh` is the end-to-end learning-from-experience path. Iteration
-1 contains no rollout: it initializes WCM and Pi0.5 from up to
-`RECAP_MAX_DEMO_EPISODES` successful SFT demonstrations (100 by default).
-Starting at iteration 2, the preceding policy collects successes and failures,
-the complete new round is appended to the replay buffer, WCM and Pi0.5 are
-updated, and the final iteration's collected round is consumed as well. Each
-round exposes the complete replay buffer, but materializes it incrementally by
-copying the small parquet/metadata prefix, hard-linking existing videos, and
-appending only the newest rollout round. RLToken RECAP uses the same
-incremental buffer path and already follows train-then-rollout ordering.
-This implements the advantage-conditioned objective from
-[RECAP / $\pi^*_{0.6}$](https://arxiv.org/abs/2511.14759) using Pi0.5's native
-continuous-action flow-matching loss.
+`run_recap.sh` is the model-selectable learning-from-experience pipeline:
 
-Pi0.5 dataset conversion is incremental. The first iteration performs the
-one-time LeRobot-v3 materialization. Each later iteration copies only the
-small parquet/metadata tree, hard-links the preceding packed videos, decodes
-and encodes only newly appended rollout episodes, and then rewrites the
-lightweight `task_index`/task metadata for all frames using the latest global
-advantage threshold. If a run is resumed after advantage annotation, an
-already materialized dataset with the same episode prefix is updated in place,
-so no videos are processed again. The source prefix and episode lengths are
-validated before reuse; a provenance manifest is retained under
-`meta/recap_incremental.json`.
+1. collect labelled RoboDojo rollouts from the current policy;
+2. combine them with task-filtered demonstrations in the replay buffer;
+3. update WCM and annotate frame-level RECAP advantages;
+4. materialize the policy dataset with model-specific language conditioning;
+5. train/evaluate candidate checkpoints and continue from the latest step.
 
-Pi0.5 normalization is incremental when `OPENPI_NORM_MAX_FRAMES=0` (the
-default). Alongside `norm_stats.json`, each iteration stores count, first and
-second moments, min/max, and OpenPI's 5000-bin quantile histograms. The next
-iteration processes only newly appended frames and continues those exact
-running statistics. A legacy normalization directory without an accumulator
-triggers one final full scan, after which later rounds are incremental. A
-nonzero `OPENPI_NORM_MAX_FRAMES` intentionally keeps full randomized sampling
-each round because that sample is not a stable dataset prefix.
+Every iteration consumes its own rollout round. Replay metadata and videos are
+reused incrementally, and interrupted rollout collection resumes from complete
+episodes. Pi0.5 and G05 share orchestration, WCM, advantage annotation, remote
+staging, artifact validation, and reporting; their conditioning, fixed assets,
+trainer launch, checkpoint packaging, and candidate discovery are adapters.
 
-WCM update cost is bounded after iteration 1. Its per-iteration dataset is all
-new rollout episodes plus a deterministic sample of at most
-`RECAP_WCM_REPLAY_EPISODES` old episodes (20 by default). The sampled dataset
-is stored under `iteration_XX/wcm_training_buffer`; the complete
-`replay_buffer` remains unchanged. Advantage inference must still rescore every
-state because WCM parameters change each round. Return targets in the sampled
-WCM dataset retain the complete replay buffer's global min-max coordinates, so
-critic values remain comparable with full-buffer advantage inference. Pi0.5
-and RLToken actor updates likewise train from the complete replay distribution,
-although they warm-start from the prior policy/actor.
+### Data formats
+
+`data.format` is mandatory and must match `meta/info.json`. External LeRobot
+v2.1 and v3.0 layouts have separate readers and there is no fallback between
+them. Sources are normalized into an explicitly marked internal v2.1 replay
+layout for WCM. The policy materializer writes LeRobot v3.0, which is consumed
+by G05 through `BaseLerobotDatasetV3`. G05 configurations reject any source
+format other than v3.0.
+
+The policy dataset is incremental: existing packed videos are hard-linked,
+only new rollout episodes are encoded, and task indices are rewritten from the
+latest advantage labels. G05 failures use the base instruction; successful
+frames use `Advantage: positive` with deterministic unconditional dropout.
+Pi0.5 retains explicit positive and negative suffixes.
+
+### Configuration and launch
+
+The launcher requires schema-v2 nested YAML and rejects unknown fields, invalid
+enums, incompatible rollout limits, and model/format mismatches before running
+a stage. Resolved configuration is saved at
+`<output_root>/<task>/resolved_config.yaml`.
 
 ```bash
-TASK_NAME=stack_bowls \
-DEMO_ROOT=$PWD/data/RoboDojo_lerobot_v21_video \
-INITIAL_POLICY_CHECKPOINT=$PWD/XPolicyLab/policy/Pi_05/checkpoints/my_sft/59999 \
-RECAP_ITERATIONS=3 RECAP_ROLLOUT_EPISODES=50 \
-bash scripts/posttrain/run_pi05_recap.sh
+# Pi0.5 template (replace placeholder paths first)
+bash scripts/posttrain/run_recap.sh \
+  --config configs/posttrain/pi05_recap.yaml.example
+
+# G05 template (replace host paths first)
+bash scripts/posttrain/run_recap.sh \
+  --config configs/posttrain/g05_recap.yaml.example
+
+# Active remote G05 configuration
+bash remote_training.sh
 ```
 
-To continue an interrupted run, repeat the same command with `--resume` (or
-set `RECAP_RESUME=1`). The launcher validates replay-buffer metadata, WCM and
-Pi0.5 checkpoints, advantage labels, normalization assets, rollout manifests,
-and value-video outputs in order. Complete stages are reused. Incomplete
-non-rollout artifacts are moved to a timestamped `.incomplete-*` sibling
-before rebuilding. WCM `last.pt` and OpenPI optimizer checkpoints resume
-inside their respective training stages when available. Completed rollout
-episodes are preserved and only the remaining episode count is collected.
-Set `run.reuse_completed_artifacts: true` together with `run.resume: true` to
-explicitly trust structurally complete stages when a moved checkout or later
-configuration edit changed their fingerprint. This mode never treats a
-partial checkpoint as complete; missing stages and incomplete optimizer
-checkpoints still resume or rebuild normally.
-Every iteration collects rollout experience before updating the policy;
-interrupted rollout rounds preserve completed episodes and continue from the next layout.
+See [pi05_recap.yaml.example](../configs/posttrain/pi05_recap.yaml.example) and
+[g05_recap.yaml.example](../configs/posttrain/g05_recap.yaml.example). The
+repository default [remote_training.yaml](../configs/posttrain/remote_training.yaml)
+selects G05, `data/pickup_video`, LeRobot v3.0, remote rollout, and remote G05
+training. `remote_training.sh` uses the RoboDojo conda environment only for
+configuration/bootstrap work; the YAML selects separate data, WCM, evaluation,
+and policy interpreters.
 
-After each rollout-bearing iteration, the launcher scores the first three newly
-collected rollouts by default (or all of them when fewer than three were requested) and
-writes head-view monitoring videos to
-`iteration_XX/value_videos/videos/`. The translucent lower-half chart is the
-official WCM `episode_value_video` renderer. WCM inference still consumes all
-camera views listed in its checkpoint; only the presentation layer uses the
-head camera. Set `RECAP_VALUE_VIDEO_EPISODES=N` or pass
-`--value-video-episodes N` to choose the count, and use `0` to disable it.
-`RECAP_VALUE_VIDEO_GPU` selects the inference card. The default fixed y-axis
-of `[-1, 1]` makes values comparable between iterations; it can be changed
-with `RECAP_VALUE_VIDEO_Y_MIN` and `RECAP_VALUE_VIDEO_Y_MAX`. Raw curves,
-success labels, alignment reports, previews, and a summary JSON are retained
-beside the videos.
-Remote rollout directories are disposable caches for value-video rendering.
-If one has been cleaned up, the launcher validates and uploads the completed
-local rollout artifact to rebuild it instead of aborting the RECAP run.
+G05 uses the upstream `scripts/finetune.py` entrypoint with the RoboDojo-owned
+Hydra overlays under `configs/g05/`. A G05 bundle contains `.hydra/config.yaml`,
+`dataset_stats.json`, `action_tokenizer.pt`, and a checkpoint file. Fixed stats
+and tokenizer assets are frozen from the initial bundle for the complete RECAP
+run. G05 currently requires joint actions, FM output, equal demonstration and
+rollout sampling weights, and `recap.guidance_scale: 1.0`.
 
-Policy evaluation does not use WCM and never gates or stops training. With
-`evaluation.reuse_rollout: true`, the baseline evaluation is a zero-copy view
-of the first `evaluation.episodes` completed rollouts from the same
-pre-training checkpoint. If fewer rollout episodes are available, only the
-remainder is collected on the configured `rollout.remote` host. Newly trained
-candidate checkpoints cannot reuse that baseline data, so their evaluation is
-performed on the remote rollout host with the same layout seed and offset.
-After all candidates are evaluated, the next iteration always continues from
-the candidate with the largest numeric checkpoint step, regardless of its
-score or the baseline score. Evaluation subprocess output stays in the job
-logs. Per-checkpoint metrics and provenance are recorded in
-`policy_evaluations/*/evaluation.json`; cumulative results and the best
-evaluated checkpoint are written under `<output_root>/<task>/`.
+### Remote execution and resume
 
-Set `RECAP_MAX_DEMO_EPISODES=20`, or pass `--max-demo-episodes 20`, to use
-only the first 20 demonstrations after filtering to the requested task and
-sorting by original `episode_index`. The same fixed subset is included in
-every replay-buffer iteration. The default is 100; setting it to `0`
-explicitly keeps all available demonstrations.
+`rollout.remote` runs the XPolicyLab policy server plus Isaac Sim.
+`training.remote` independently stages WCM and policy training on a second
+host. For G05, `rollout.remote.g05_root`, `g05.root`, and
+`training.remote.policy_python` refer to paths on their respective hosts.
+Remote preflight checks SSH, executables, repository files, upstream G05, tar,
+zstd, `setsid`, and requested GPUs.
 
-The default RECAP settings use 10-step value lookahead, one global threshold
-selecting the top 30% of advantages, `gamma=1`, and 10% positive-sample CFG
-dropout. Demonstrations are always positive; rollout labels use the inclusive
-global threshold. Negative samples always use the base prompt, while positive
-samples use `Advantage: positive` unless dropped to the base prompt. Return
-labels and N-step rewards share the global `[-1,0]` normalization used by the
-critic. Set `RECAP_LOOKAHEAD`, `RECAP_POSITIVE_FRACTION`,
-`RECAP_UNCONDITIONAL_PROB`, `RECAP_GAMMA`, and `WCM_FAILURE_PENALTY` to tune
-these values. The current JAX integration intentionally accepts only
-`RECAP_GUIDANCE_SCALE=1.0`, where guided inference reduces to the positive
-conditional branch.
-Every iteration starts from the preceding policy checkpoint. WCM can be warm
-started with `INITIAL_WCM_CHECKPOINT`; model weights and action-normalization
-statistics are reused while the optimizer and episode split are rebuilt after
-the buffer changes.
+Repeat the launch with `--resume` to continue. Complete artifacts are reused
+only after structural and fingerprint validation; incomplete non-rollout
+artifacts are moved to recoverable `.incomplete-*` siblings. WCM and policy
+optimizer checkpoints resume when available. `run.reuse_completed_artifacts`
+can explicitly trust structurally complete stages after a checkout move.
 
-Robot layout is selected by `ENV_CFG_TYPE` and `ACTION_TYPE`. The trainer
-derives the joint/gripper delta mask from `env_cfg/robot/_robot_info.json` and
-recomputes normalization statistics for that buffer, covering both single-
-and dual-arm RoboDojo configurations. Fine-tuning still supports `full`,
-`action_expert`, `action_expert_lora`, `paligemma_lora`, and `all_lora` via
-`PI05_FINETUNE_MODE`.
-
-`run_pi05_recap.sh` requires one unified nested YAML configuration. Run it as
-`bash scripts/posttrain/run_pi05_recap.sh --config <path>`. Unknown fields,
-invalid enum values, inconsistent rollout limits, and incompatible GPU/FSDP/
-batch-size settings fail before any stage starts. See
-[pi05_recap.yaml.example](../configs/posttrain/pi05_recap.yaml.example) for the
-complete schema. The resolved defaults are written to
-`<output_root>/<task>/resolved_config.yaml`. Every model/data hyperparameter
-participates in the artifact fingerprint, while execution-only fields such as
-`run.resume`, Python paths, and physical GPU indices do not invalidate results.
-
-`devices.wcm_train` launches one official WCM DDP process per listed GPU; its
-world size is derived from the list. Advantage inference uses the same GPU
-list and shards windows without padding. `devices.value_video` selects the
-local GPU used for value-overlay rendering. `devices.pi05_train` defines the
-JAX mesh, while `pi05.fsdp_devices` controls its FSDP axis and must divide both
-the GPU count and global `pi05.batch_size`. Pi0.5 parameter dtype, sharding,
-offload, EMA, optimizer, and LoRA variants are passed explicitly into the
-OpenPI `TrainConfig` and recorded in every checkpoint's metadata.
-
-WCM, RECAP, RL Token RECAP, and WCM-selected Pi0.5 launchers reserve their
-training GPUs during long CPU-only dataset construction phases. The holder is
-released at the model-allocation boundary, including inside the official WCM
-and RL Token trainers, and is also cleaned up on errors or interrupts. It
-leaves 2048 MiB per GPU available for CUDA/NCCL initialization by default.
-Use `devices.reservation.leave_free_mib` to change that margin or
-`devices.reservation.enabled: false` to disable reservation.
-
-Remote RECAP uses the same reservation settings. Before checkpoint/WCM upload
-and CPU-only extraction it atomically locks each requested remote GPU, verifies
-that no compute process is using it and that existing memory use is at most
-`devices.reservation.idle_used_max_mib` (64 MiB by default), and then reserves
-its free memory. The memory holder is released immediately before policy,
-Isaac Sim, or value inference starts; the per-GPU lock remains until that
-worker exits. Remote worker and reservation PIDs are stored below
-`<remote.work_root>/jobs/<job-id>/control`. Normal completion, failure, local
-`EXIT`, and `INT`/`TERM` all invoke the remote `cancel` path, which terminates
-the worker process group and releases the reservation and locks. The worker
-also watches its SSH launcher, while
-`devices.reservation.remote_max_hold_seconds` (1800 seconds by default) bounds
-an orphaned reservation if the local process is killed without running traps.
-
-Training can also be moved to a second machine with the optional
-`training.remote` block. It is disabled by default, so existing configurations
-keep their local WCM/Pi0.5 training behavior. Set `training.remote.host` to
-`local`/`localhost` to use this machine through the same transfer path, or set
-it to a passwordless SSH alias/hostname for another server. `repo_root` must
-point to a RoboDojo checkout on that host and `work_root` is a persistent job
-cache. `pi05_gpus` and `wcm_gpus` are GPU IDs on the training host; they are
-independent of the local `devices.*` values.
-
-When enabled, WCM training, WCM advantage inference, Pi0.5 training, and
-optional value-video rendering execute on the configured training host. Replay
-buffer/dataset preparation and the outer RECAP state machine remain local, and
-only their stage inputs/outputs cross the transport boundary. Set
-`training.remote.render_value_video: false` to keep value-video rendering
-local. Existing `rollout.remote` remains the preferred host for simulator
-rollouts and its value videos when configured.
-
-For example:
-
-```yaml
-training:
-  remote:
-    enabled: true
-    host: train4090                 # or: local
-    repo_root: /share/user/RoboDojo
-    work_root: /share/user/recap_remote_jobs
-    pi05_gpus: [0, 1]
-    wcm_gpus: [2, 3]
-```
-
-The remote preflight checks SSH/local execution, zstd, the RoboDojo checkout,
-WCM Python, GNU tar, `setsid`, and all requested GPUs before the first stage.
-Remote job directories are retained under `work_root/jobs/` so interrupted
-transfers can reuse a completed stage archive and `--resume` can upload the
-local partial checkpoint back to the same remote stage.
-
-A rollout episode itself is a sequential simulator-policy interaction and is
-not split across GPUs. `POLICY_GPU` and `ENV_GPU` do place the XPolicyLab
-policy server and Isaac Sim on separate cards (by default the first two
-`TRAIN_GPUS` entries when available). During RECAP collection, simulator and
-policy-server output is written to the iteration's `rollouts/rollout.log`, and
-the terminal keeps one aggregate episode progress bar. A rollout-only
-collection can also be launched with `robodojo.sh eval --rollout-dir PATH`;
-this does not require LeRobot inside the Isaac environment.
-
-The last checkpoint used for continuation and final output is written to
-`outputs/recap/<task>/latest_policy.txt`. The independently tracked best
-evaluated checkpoint is documented in `best_checkpoint.txt`,
-`best_checkpoint.json`, and `best_checkpoint.md` in the same directory; it may
-differ from the last checkpoint. Both are normal OpenPI checkpoints with
-RoboDojo model metadata, so the last checkpoint can be scored via:
-
-```bash
-bash scripts/robodojo.sh eval \
-  --policy-dir XPolicyLab/policy/Pi_05 --policy-env openpi \
-  --task stack_bowls \
-  --ckpt "$(cat outputs/recap/stack_bowls/latest_policy.txt)" \
-  --env-cfg arx_x5 --action-type joint --eval-num 1
-```
+The continuation checkpoint is written to `latest_policy.txt`, WCM to
+`latest_wcm.txt`, and evaluation/report artifacts stay under each iteration.
+Policy evaluation is independent of WCM and never gates training.
 
 ## Typical eval flow
 

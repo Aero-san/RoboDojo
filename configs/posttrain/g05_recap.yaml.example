@@ -1,0 +1,151 @@
+# G05 through the shared RECAP pipeline. Replace host-specific absolute paths.
+schema_version: 2
+
+policy:
+  name: g05
+
+run:
+  task: general_pickup
+  output_root: outputs/recap_g05
+  iterations: 3
+  resume: false
+  reuse_completed_artifacts: false
+  seed: 0
+
+environment:
+  env_cfg: arx_x5
+  action_type: joint
+  policy_env: /absolute/path/to/g05-runtime
+  eval_env: RoboDojo
+
+checkpoints:
+  # A run directory containing .hydra/config.yaml, dataset_stats.json,
+  # action_tokenizer.pt, and checkpoints/<checkpoint or step_*.pt>.
+  initial_policy: XPolicyLab/policy/G05/checkpoints/RoboDojo-sim-arx_x5-joint-0
+  initial_wcm: null
+
+data:
+  format: v3.0
+  demo_root: data/pickup_video
+  max_demo_episodes: 44
+  mode: video
+  norm_asset_id: null
+
+devices:
+  policy_train: [0, 1, 2, 3]
+  wcm_train: [0, 1, 2, 3]
+  rollout_policy: 0
+  rollout_environment: 1
+  value_video: 0
+  reservation:
+    enabled: true
+    leave_free_mib: 2048
+    idle_used_max_mib: 64
+    remote_max_hold_seconds: 1800
+
+rollout:
+  episodes: 100
+  layout_seed: 0
+  minimum:
+    total: 50
+    successes: 5
+    failures: 5
+  remote:
+    enabled: true
+    host: SIM_HOST
+    repo_root: /absolute/path/to/RoboDojo
+    work_root: /absolute/path/to/recap_rollout_jobs
+    g05_root: /absolute/path/to/GalaxeaVLA
+    zstd: zstd
+    conda: conda
+    python: /absolute/path/to/robodojo-python
+    policy_gpu: 0
+    environment_gpu: 1
+    value_video_gpu: 0
+    policy_evaluation: true
+
+training:
+  remote:
+    enabled: true
+    host: TRAIN_HOST
+    repo_root: /absolute/path/to/RoboDojo
+    work_root: /absolute/path/to/recap_training_jobs
+    zstd: zstd
+    conda: conda
+    python: /absolute/path/to/bootstrap-python
+    policy_python: /absolute/path/to/g05-python
+    wcm_python: /absolute/path/to/wcm-python
+    policy_gpus: [0, 1, 2, 3]
+    wcm_gpus: [0, 1, 2, 3]
+    value_video_gpu: 0
+    render_value_video: true
+
+wcm:
+  train:
+    config: configs/wcm/robodojo_pi05.yaml
+    epochs: 5
+    replay_episodes: 20
+    per_device_batch_size: 16
+    num_workers: 8
+    precision: bf16
+    learning_rate: null
+    warmup_steps: null
+    video_decoder: pyav
+  inference:
+    batch_size: 8
+    num_workers: 2
+    device: cuda
+
+recap:
+  lookahead: 10
+  gamma: 1.0
+  failure_penalty: 300
+  positive_fraction: 0.3
+  unconditional_probability: 0.1
+  guidance_scale: 1.0
+  sampling:
+    demonstrations: 1.0
+    rollouts: 1.0
+
+g05:
+  # This is the G05 source checkout on the training host.
+  root: /absolute/path/to/GalaxeaVLA
+  task_config: robodojo_recap
+  processor_path: checkpoints/qwen3_5_2b_base_processor
+  action_tokenizer: null
+  action_source: fm
+  steps: 3000
+  batch_size: 8
+  num_workers: 8
+  grad_accumulation_steps: 1
+  wandb_enabled: true
+  optimizer:
+    learning_rate: 1.0e-5
+    warmup_steps: 500
+    decay_learning_rate: 1.0e-6
+    decay_start_ratio: 0.5
+    weight_decay: 0.01
+
+evaluation:
+  interval: 1000
+  episodes: 20
+  reuse_rollout: true
+  layout_seed: 1
+  layout_offset: 0
+
+value_video:
+  episodes: 3
+  batch_size: 8
+  device: cuda
+  precision: bf16
+  backend: auto
+  speed: 1.0
+  y_min: -1.0
+  y_max: 1.0
+
+runtime:
+  # Local data Python must provide lerobot; policy Python is only needed for local training.
+  policy_python: /absolute/path/to/local-g05-python
+  data_python: /absolute/path/to/lerobot-python
+  wcm_python: /absolute/path/to/wcm-python
+  policy_dir: null

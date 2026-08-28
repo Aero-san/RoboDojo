@@ -1,7 +1,7 @@
-"""Incrementally materialize an advantage-conditioned Pi0.5 dataset.
+"""Incrementally materialize an advantage-conditioned policy dataset.
 
 The first materialization uses the regular converter.  Later RECAP rounds copy
-the preceding LeRobot-v3 dataset, hard-link its immutable packed videos, append
+the preceding LeRobot-v3 policy dataset, hard-link its immutable packed videos, append
 only newly collected episodes, and rewrite the lightweight task-conditioning
 columns for all frames using the current advantage labels.
 """
@@ -28,12 +28,16 @@ except ModuleNotFoundError as exc:
     from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME, LeRobotDataset
 
 try:
-    import prepare_pi05_dataset as full_converter
+    from lerobot_io import LeRobotLayout
+    import prepare_policy_dataset as full_converter
     from progress import progress_iter, tqdm_print_bridge
+    from recap_conditioning import training_prompt
     from robodojo_dataset import filter_episode_metadata
 except ModuleNotFoundError:
-    from scripts.posttrain import prepare_pi05_dataset as full_converter
+    from scripts.posttrain import prepare_policy_dataset as full_converter
+    from scripts.posttrain.lerobot_io import LeRobotLayout
     from scripts.posttrain.progress import progress_iter, tqdm_print_bridge
+    from scripts.posttrain.recap_conditioning import training_prompt
     from scripts.posttrain.robodojo_dataset import filter_episode_metadata
 
 
@@ -71,10 +75,10 @@ def _advantage_labels(path: Path) -> tuple[dict[str, Any], dict[int, list[bool]]
 
 
 def _source_episodes(root: Path, task: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    info = _json(root / "meta/info.json")
-    episodes = _jsonl(root / "meta/episodes.jsonl")
-    task_path = root / "meta/tasks.jsonl"
-    task_rows = _jsonl(task_path) if task_path.exists() else None
+    layout = LeRobotLayout(root, "v2.1")
+    info = layout.info
+    episodes = layout.episodes()
+    task_rows = layout.tasks()
     episodes, _ = filter_episode_metadata(episodes, task, task_rows)
     return info, episodes
 
@@ -113,7 +117,7 @@ def _v3_episode_lengths(root: Path) -> list[int]:
         )
     records.sort()
     if [episode for episode, _ in records] != list(range(len(records))):
-        raise ValueError(f"Pi0.5 dataset has non-contiguous episode indices: {root}")
+        raise ValueError(f"policy dataset has non-contiguous episode indices: {root}")
     return [length for _, length in records]
 
 
@@ -122,7 +126,7 @@ def _validate_prefix(output: Path, identities: list[dict[str, Any]]) -> int:
     count = int(info.get("total_episodes", -1))
     if count < 0 or count > len(identities):
         raise ValueError(
-            f"Existing Pi0.5 dataset has {count} episodes but the replay buffer has {len(identities)}."
+            f"Existing policy dataset has {count} episodes but the replay buffer has {len(identities)}."
         )
     lengths = _v3_episode_lengths(output)
     expected_lengths = [row["length"] for row in identities[:count]]
@@ -132,7 +136,7 @@ def _validate_prefix(output: Path, identities: list[dict[str, Any]]) -> int:
     if manifest_path.exists():
         previous = _json(manifest_path).get("episodes", [])
         if previous != identities[:count]:
-            raise ValueError("Existing Pi0.5 dataset provenance is not a prefix of the current replay buffer.")
+            raise ValueError("Existing policy dataset provenance is not a prefix of the current replay buffer.")
     return count
 
 
@@ -187,6 +191,9 @@ def _append_new_episodes(
     episodes: list[dict[str, Any]],
     labels: dict[int, list[bool]],
     start: int,
+    policy: str,
+    unconditional_probability: float,
+    seed: int,
 ) -> None:
     if start == len(episodes):
         return
@@ -217,12 +224,19 @@ def _append_new_episodes(
                 full_converter._SequentialVideo(videos["cam_right_wrist"]) as right_video,
             ):
                 for frame in range(table.num_rows):
-                    condition = "positive" if episode_labels[frame] else "negative"
                     dataset.add_frame(
                         {
                             "observation.state": np.asarray(states[frame], dtype=np.float32),
                             "action": np.asarray(actions[frame], dtype=np.float32),
-                            "task": f"{task}\nAdvantage: {condition}",
+                            "task": training_prompt(
+                                policy,
+                                task,
+                                episode_labels[frame],
+                                unconditional_probability=unconditional_probability,
+                                seed=seed,
+                                episode=source_episode,
+                                frame=frame,
+                            ),
                             "observation.images.cam_high": high_video.read(),
                             "observation.images.cam_left_wrist": left_video.read(),
                             "observation.images.cam_right_wrist": right_video.read(),
@@ -252,6 +266,9 @@ def _rewrite_advantage_conditions(
     output: Path,
     episodes: list[dict[str, Any]],
     labels: dict[int, list[bool]],
+    policy: str,
+    unconditional_probability: float,
+    seed: int,
 ) -> None:
     task_names: list[str] = []
     frame_tasks: dict[int, np.ndarray] = {}
@@ -260,7 +277,18 @@ def _rewrite_advantage_conditions(
         source_episode = int(metadata["episode_index"])
         base_task = str(metadata.get("tasks", ["Perform the RoboDojo task."])[0])
         names = np.asarray(
-            [f"{base_task}\nAdvantage: {'positive' if value else 'negative'}" for value in labels[source_episode]],
+            [
+                training_prompt(
+                    policy,
+                    base_task,
+                    value,
+                    unconditional_probability=unconditional_probability,
+                    seed=seed,
+                    episode=source_episode,
+                    frame=frame,
+                )
+                for frame, value in enumerate(labels[source_episode])
+            ],
             dtype=object,
         )
         frame_tasks[output_episode] = names
@@ -339,6 +367,9 @@ def _full_materialization(args: argparse.Namespace) -> None:
             task=args.task,
             max_episodes=0,
             mode=args.mode,
+            policy=args.policy,
+            unconditional_probability=args.unconditional_probability,
+            seed=args.seed,
         )
     )
 
@@ -356,32 +387,37 @@ def main(args: argparse.Namespace) -> None:
 
     if not output.exists():
         if previous is None:
-            print("[Pi0.5 incremental] no preceding dataset; performing the one-time full materialization")
+            print("[RECAP dataset] no preceding dataset; performing the one-time full materialization")
             _full_materialization(args)
         else:
             _validate_prefix(previous, identities)
-            print(f"[Pi0.5 incremental] cloning preceding dataset with hard-linked videos: {previous}")
+            print(f"[RECAP dataset] cloning preceding dataset with hard-linked videos: {previous}")
             _clone_dataset(previous, output)
 
     marker = output / IN_PROGRESS
-    marker.write_text("incremental Pi0.5 RECAP update in progress\n", encoding="utf-8")
+    marker.write_text("incremental RECAP policy-dataset update in progress\n", encoding="utf-8")
     existing = _validate_prefix(output, identities)
     if existing < len(episodes):
         print(
-            f"[Pi0.5 incremental] reusing {existing} episodes and materializing "
+            f"[RECAP dataset] reusing {existing} episodes and materializing "
             f"{len(episodes) - existing} new rollout episodes"
         )
-        _append_new_episodes(output, args.repo_id, source_root, source_info, episodes, labels, existing)
+        _append_new_episodes(
+            output, args.repo_id, source_root, source_info, episodes, labels, existing,
+            args.policy, args.unconditional_probability, args.seed,
+        )
     else:
-        print(f"[Pi0.5 incremental] reusing all {existing} episode videos")
+        print(f"[RECAP dataset] reusing all {existing} episode videos")
 
-    print(f"[Pi0.5 incremental] updating advantage conditions for {len(episodes)} episodes")
-    _rewrite_advantage_conditions(output, episodes, labels)
+    print(f"[RECAP dataset] updating advantage conditions for {len(episodes)} episodes")
+    _rewrite_advantage_conditions(
+        output, episodes, labels, args.policy, args.unconditional_probability, args.seed
+    )
     _atomic_json(
         output / MANIFEST,
         {
             "schema_version": 1,
-            "type": "pi05_recap_incremental",
+            "type": "recap_policy_dataset_incremental",
             "source_dataset": str(source_root),
             "advantage_checkpoint": advantage_header.get("wcm_checkpoint", ""),
             "episodes": identities,
@@ -391,7 +427,7 @@ def main(args: argparse.Namespace) -> None:
     # metadata, task maps, and missing packed videos before training starts.
     validated = LeRobotDataset(repo_id=args.repo_id, root=output)
     if validated.meta.total_episodes != len(episodes):
-        raise RuntimeError("Incremental Pi0.5 dataset failed final episode-count validation.")
+        raise RuntimeError("Incremental policy dataset failed final episode-count validation.")
     marker.unlink()
     print(
         f"saved incremental LeRobot dataset: {output} episodes={len(episodes)} "
@@ -407,4 +443,7 @@ if __name__ == "__main__":
     parser.add_argument("--previous-dataset", default="")
     parser.add_argument("--task", default="")
     parser.add_argument("--mode", choices=("image", "video"), default="video")
+    parser.add_argument("--policy", choices=("pi05", "g05"), default="pi05")
+    parser.add_argument("--unconditional-probability", type=float, default=0.1)
+    parser.add_argument("--seed", type=int, default=0)
     main(parser.parse_args())

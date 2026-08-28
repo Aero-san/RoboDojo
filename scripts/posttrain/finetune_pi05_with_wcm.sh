@@ -104,7 +104,7 @@ if [[ -n "${TASK_NAME}" ]]; then CONVERT_ARGS+=(--task "${TASK_NAME}"); fi
 echo "[Pi_05/WCM] preparing ${REPO_ID}"
 cd "${ROOT_DIR}"
 start_gpu_reservation "${GPU_ID}" "${WCM_PYTHON_BIN}" "WCM-selected Pi0.5 dataset conversion"
-"${PI_PYTHON_BIN}" "${SCRIPT_DIR}/prepare_pi05_dataset.py" "${CONVERT_ARGS[@]}"
+"${PI_PYTHON_BIN}" "${SCRIPT_DIR}/prepare_policy_dataset.py" "${CONVERT_ARGS[@]}"
 
 echo "[Pi_05/WCM] fine-tuning with OpenPI"
 GPU_COUNT=$(awk -F',' '{print NF}' <<<"${GPU_ID}")

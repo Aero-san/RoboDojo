@@ -1,8 +1,8 @@
-"""Convert RoboDojo's v2.1 video export into the LeRobot tree used by Pi0.5.
+"""Convert RoboDojo's v2.1 video export into the LeRobot tree used by a RECAP policy.
 
-This keeps the source export untouched and optionally filters episodes using a
-WCM success-label JSON file.  The resulting repo can be passed to OpenPI with
-``OPENPI_LEROBOT_REPO_ID``.
+This keeps the normalized replay source untouched and optionally filters
+episodes using a WCM success-label JSON file. The resulting LeRobot v3.0
+dataset is consumed by the selected policy adapter.
 """
 
 from __future__ import annotations
@@ -25,10 +25,14 @@ except ModuleNotFoundError as exc:
     from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME, LeRobotDataset
 
 try:
+    from lerobot_io import LeRobotLayout
     from progress import progress_iter, tqdm_print_bridge
+    from recap_conditioning import training_prompt
     from robodojo_dataset import filter_episode_metadata
 except ModuleNotFoundError:
+    from scripts.posttrain.lerobot_io import LeRobotLayout
     from scripts.posttrain.progress import progress_iter, tqdm_print_bridge
+    from scripts.posttrain.recap_conditioning import training_prompt
     from scripts.posttrain.robodojo_dataset import filter_episode_metadata
 
 
@@ -153,10 +157,10 @@ def _create_dataset(repo_id: str, info: dict[str, Any], mode: str) -> LeRobotDat
 
 def main(args: argparse.Namespace) -> None:
     root = Path(args.dataset_root).expanduser().resolve()
-    info = json.loads((root / "meta" / "info.json").read_text(encoding="utf-8"))
-    episodes = _jsonl(root / "meta" / "episodes.jsonl")
-    task_metadata_path = root / "meta" / "tasks.jsonl"
-    task_metadata = _jsonl(task_metadata_path) if task_metadata_path.exists() else None
+    layout = LeRobotLayout(root, "v2.1")
+    info = layout.info
+    episodes = layout.episodes()
+    task_metadata = layout.tasks()
     episodes, _ = filter_episode_metadata(episodes, args.task, task_metadata)
     labels = _labels(args.episode_labels)
     advantage_labels = _advantage_labels(args.advantage_labels)
@@ -185,7 +189,7 @@ def main(args: argparse.Namespace) -> None:
     with tqdm_print_bridge():
         for episode_meta in progress_iter(
             selected,
-            desc="Converting Pi0.5 dataset",
+            desc="Converting policy dataset",
             total=len(selected),
             unit="episode",
         ):
@@ -207,7 +211,7 @@ def main(args: argparse.Namespace) -> None:
                 )
                 if not source_path.exists():
                     # Single-arm exports may have only cam_wrist.  Duplicating it
-                    # is the least surprising way to satisfy Pi0.5's three-input
+                    # is the least surprising way to satisfy the policy's three-input
                     # ALOHA transform while preserving the real head view.
                     source_path = root / video_template.format(
                         video_key="observation.images.cam_wrist",
@@ -233,8 +237,15 @@ def main(args: argparse.Namespace) -> None:
                 for index in range(frame_count):
                     frame_task = task
                     if episode_advantages is not None:
-                        condition = "positive" if episode_advantages[index] else "negative"
-                        frame_task = f"{task}\nAdvantage: {condition}"
+                        frame_task = training_prompt(
+                            args.policy,
+                            task,
+                            episode_advantages[index],
+                            unconditional_probability=args.unconditional_probability,
+                            seed=args.seed,
+                            episode=episode,
+                            frame=index,
+                        )
                     frame: dict[str, Any] = {
                         "observation.state": np.asarray(states[index], dtype=np.float32),
                         "action": np.asarray(actions[index], dtype=np.float32),
@@ -266,4 +277,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--max-episodes", type=int, default=0)
     parser.add_argument("--mode", choices=("image", "video"), default="image")
+    parser.add_argument("--policy", choices=("pi05", "g05"), default="pi05")
+    parser.add_argument("--unconditional-probability", type=float, default=0.1)
+    parser.add_argument("--seed", type=int, default=0)
     main(parser.parse_args())

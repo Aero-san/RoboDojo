@@ -112,7 +112,7 @@ def _install_worker(args: argparse.Namespace) -> str:
     return remote_worker
 
 
-def _resolve_checkpoint(checkpoint: Path) -> Path:
+def _resolve_pi05_checkpoint(checkpoint: Path) -> Path:
     checkpoint = checkpoint.expanduser().resolve()
     if (checkpoint / "params").is_dir():
         return checkpoint
@@ -129,25 +129,53 @@ def _resolve_checkpoint(checkpoint: Path) -> Path:
     return candidates[-1]
 
 
-def _package_checkpoint(checkpoint: Path, archive: Path) -> None:
-    checkpoint = _resolve_checkpoint(checkpoint)
+def _g05_bundle(checkpoint: Path) -> tuple[Path, Path]:
+    checkpoint = checkpoint.expanduser().resolve()
+    if checkpoint.is_dir():
+        candidates = [checkpoint / "checkpoints" / "checkpoint"]
+        candidates.extend(sorted(checkpoint.glob("checkpoints/step_*.pt")))
+        candidates.extend(checkpoint.glob("**/model_state_dict.pt"))
+        candidates = [candidate for candidate in candidates if candidate.is_file()]
+        if not candidates:
+            raise FileNotFoundError(f"No G05 checkpoint below: {checkpoint}")
+        checkpoint = candidates[-1]
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"G05 checkpoint does not exist: {checkpoint}")
+    for root in checkpoint.parents:
+        if (root / ".hydra" / "config.yaml").is_file():
+            for sidecar in ("dataset_stats.json", "action_tokenizer.pt"):
+                if not (root / sidecar).is_file():
+                    raise FileNotFoundError(f"G05 checkpoint bundle is missing {sidecar}: {root}")
+            return root, checkpoint
+    raise FileNotFoundError(f"No G05 Hydra run and sidecars above: {checkpoint}")
+
+
+def _package_checkpoint(policy: str, checkpoint: Path, archive: Path) -> None:
     archive.parent.mkdir(parents=True, exist_ok=True)
     temporary = archive.with_suffix(archive.suffix + ".tmp")
     temporary.unlink(missing_ok=True)
-    command = [
-        "tar",
-        "--zstd",
-        "-cf",
-        str(temporary),
-        "--exclude=./train_state",
-        "-C",
-        str(checkpoint),
-        ".",
-    ]
-    metadata = checkpoint / "robodojo_pi05_model.json"
-    parent_metadata = checkpoint.parent / "robodojo_pi05_model.json"
-    if not metadata.is_file() and parent_metadata.is_file():
-        command.extend(["-C", str(checkpoint.parent), parent_metadata.name])
+    if policy == "pi05":
+        checkpoint = _resolve_pi05_checkpoint(checkpoint)
+        command = [
+            "tar", "--zstd", "-cf", str(temporary), "--exclude=./train_state",
+            "-C", str(checkpoint), ".",
+        ]
+        metadata = checkpoint / "robodojo_pi05_model.json"
+        parent_metadata = checkpoint.parent / "robodojo_pi05_model.json"
+        if not metadata.is_file() and parent_metadata.is_file():
+            command.extend(["-C", str(checkpoint.parent), parent_metadata.name])
+    elif policy == "g05":
+        root, checkpoint = _g05_bundle(checkpoint)
+        command = [
+            "tar", "--zstd", "-cf", str(temporary), "-C", str(root),
+            str(checkpoint.relative_to(root)), ".hydra", "dataset_stats.json",
+            "action_tokenizer.pt",
+        ]
+        metadata = root / "robodojo_g05_model.json"
+        if metadata.is_file():
+            command.append(metadata.name)
+    else:
+        raise ValueError(f"Unsupported RECAP policy: {policy}")
     _run(command)
     temporary.replace(archive)
 
@@ -351,7 +379,7 @@ def preflight(args: argparse.Namespace) -> None:
 
 
 def rollout(args: argparse.Namespace) -> None:
-    _remote(args, ["pkill", "-9", "-u", "mingyang", "-x", "python"])
+    #_remote(args, ["pkill", "-9", "-u", "mingyang", "-x", "python"])
     _validate(args)
     checkpoint = Path(args.checkpoint)
     local_output = Path(args.output)
@@ -370,7 +398,7 @@ def rollout(args: argparse.Namespace) -> None:
         _reserve_remote_gpus(args, job_root, [args.policy_gpu, args.env_gpu])
         worker = _install_worker(args)
         if not _remote_success(args, ["test", "-f", f"{job_root}/policy/.extracted"]):
-            _package_checkpoint(checkpoint, archive)
+            _package_checkpoint(args.policy, checkpoint, archive)
             _remote(args, ["mkdir", "-p", inbox])
             _scp(args, str(archive), f"{args.host}:{remote_checkpoint}.tmp")
             _remote(args, ["mv", f"{remote_checkpoint}.tmp", remote_checkpoint])
@@ -378,6 +406,9 @@ def rollout(args: argparse.Namespace) -> None:
         environment.update(
             {
                 "RECAP_REMOTE_CHECKPOINT_ARCHIVE": remote_checkpoint,
+                "RECAP_REMOTE_POLICY": args.policy,
+                "RECAP_REMOTE_G05_ROOT": args.g05_root,
+                "RECAP_REMOTE_G05_ACTION_SOURCE": args.g05_action_source,
                 "RECAP_REMOTE_RESULT_ARCHIVE": result,
                 "RECAP_REMOTE_TASK": args.task,
                 "RECAP_REMOTE_EPISODES": str(args.episodes),
@@ -518,6 +549,9 @@ def main() -> None:
     common(rollout_parser)
     rollout_parser.add_argument("--job-id", required=True)
     rollout_parser.add_argument("--checkpoint", required=True)
+    rollout_parser.add_argument("--policy", choices=("pi05", "g05"), required=True)
+    rollout_parser.add_argument("--g05-root", default="")
+    rollout_parser.add_argument("--g05-action-source", choices=("fm", "ar"), default="fm")
     rollout_parser.add_argument("--output", required=True)
     rollout_parser.add_argument("--task", required=True)
     rollout_parser.add_argument("--episodes", type=int, required=True)

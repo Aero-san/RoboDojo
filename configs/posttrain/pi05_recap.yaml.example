@@ -1,6 +1,9 @@
 # Unified Pi0.5 RECAP configuration. Unknown fields are rejected.
-# Run with: bash scripts/posttrain/run_pi05_recap.sh --config <this-file>
-schema_version: 1
+# Run with: bash scripts/posttrain/run_recap.sh --config <this-file>
+schema_version: 2
+
+policy:
+  name: pi05
 
 run:
   task: stack_bowls
@@ -23,13 +26,14 @@ checkpoints:
   initial_wcm: null
 
 data:
+  format: v2.1
   demo_root: /absolute/path/to/RoboDojo_lerobot_v21_video
   max_demo_episodes: 100
   mode: video
   norm_asset_id: null
 
 devices:
-  pi05_train: [0, 1, 2, 3]
+  policy_train: [0, 1, 2, 3]
   wcm_train: [0, 1, 2, 3]
   rollout_policy: 0
   rollout_environment: 1
@@ -59,6 +63,7 @@ rollout:
     environment_gpu: 0
     value_video_gpu: 0
     policy_evaluation: false
+    g05_root: null
 
 training:
   # Explicit opt-in. Set host to `local` to execute on this machine, or to
@@ -71,9 +76,9 @@ training:
     zstd: zstd
     conda: conda
     python: python
-    pi_python: null
+    policy_python: null
     wcm_python: null
-    pi05_gpus: [0, 1]
+    policy_gpus: [0, 1]
     wcm_gpus: [0, 1]
     value_video_gpu: 0
     render_value_video: true
@@ -148,6 +153,7 @@ value_video:
   y_max: 1.0
 
 runtime:
-  pi_python: null
+  policy_python: null
+  data_python: XPolicyLab/policy/Pi_05/openpi/.venv/bin/python
   wcm_python: null
   policy_dir: null

@@ -4,6 +4,7 @@ import importlib
 import inspect
 import json
 import os
+import re
 
 import numpy as np
 import transforms3d as t3d
@@ -19,6 +20,19 @@ from src.eval_client.rollout_recorder import RolloutRecorder
 from utils.cluttered_generator import UnStableError
 from utils.pipeline_utils import get_robot_action_dim_info
 from utils.save_file import VideoStreamWriter, format_video_saved_message, save_json
+
+_RECAP_CONDITION = re.compile(r"\nAdvantage: (?:positive|negative)\s*$")
+
+def _condition_instruction(instruction):
+    condition = os.environ.get("ROBODOJO_RECAP_INFERENCE_CONDITION", "").strip()
+    if not condition:
+        return instruction
+    if condition not in {"positive", "negative"}:
+        raise ValueError(
+            "ROBODOJO_RECAP_INFERENCE_CONDITION must be positive or negative."
+        )
+    base = _RECAP_CONDITION.sub("", str(instruction).rstrip())
+    return f"{base}\nAdvantage: {condition}"
 
 
 def _patch_websockets_proxy_compat():
@@ -332,6 +346,8 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 if self.rollout_recorder is not None and not last_frame and not self.end_flag[env_idx]:
                     self.rollout_recorder.observe(env_idx, data[env_idx])
                 env_data = deepcopy(data[env_idx])
+                if "instruction" in env_data:
+                    env_data["instruction"] = _condition_instruction(env_data["instruction"])
                 env_data["env_idx"] = env_idx
                 data_list.append(env_data)
             return data_list

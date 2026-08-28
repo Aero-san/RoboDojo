@@ -21,9 +21,11 @@ import pyarrow as pa
 import pyarrow.parquet as parquet
 
 try:
+    from lerobot_io import LeRobotLayout
     from progress import progress_iter
     from robodojo_dataset import filter_episode_metadata
 except ModuleNotFoundError:
+    from scripts.posttrain.lerobot_io import LeRobotLayout
     from scripts.posttrain.progress import progress_iter
     from scripts.posttrain.robodojo_dataset import filter_episode_metadata
 
@@ -47,24 +49,22 @@ def _link(source: Path, destination: Path) -> None:
         shutil.copy2(source, destination)
 
 
-def _video_source(root: Path, info: dict[str, Any], episode: int, camera: str) -> Path:
-    chunk_size = int(info.get("chunks_size", 1000))
-    template = info.get(
-        "video_path",
-        "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
-    )
+def _video_source(
+    layout: LeRobotLayout, metadata: dict[str, Any], camera: str
+) -> Path:
     keys = [f"observation.images.{camera}"]
     if camera in {"cam_left_wrist", "cam_right_wrist"}:
         keys.append("observation.images.cam_wrist")
     for key in keys:
-        path = root / template.format(
-            episode_chunk=episode // chunk_size,
-            episode_index=episode,
-            video_key=key,
-        )
-        if path.exists():
-            return path
-    raise FileNotFoundError(f"No {camera} video for episode={episode} below {root}")
+        if key not in layout.info.get("features", {}):
+            continue
+        try:
+            return layout.video_path(metadata, key)
+        except (FileNotFoundError, KeyError):
+            continue
+    raise FileNotFoundError(
+        f"No {camera} video for episode={metadata['episode_index']} below {layout.root}"
+    )
 
 
 def _episode_table(
@@ -114,14 +114,15 @@ def _episode_table(
     )
 
 
-def _demo_records(root: Path, task: str, max_episodes: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    info = _json(root / "meta" / "info.json")
-    episodes, _ = filter_episode_metadata(_jsonl(root / "meta" / "episodes.jsonl"), task)
+def _demo_records(
+    root: Path, task: str, max_episodes: int, data_format: str
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    layout = LeRobotLayout(root, data_format)
+    info = layout.info
+    episodes, _ = filter_episode_metadata(layout.episodes(), task, layout.tasks())
     episodes = sorted(episodes, key=lambda row: int(row["episode_index"]))
     if max_episodes > 0:
         episodes = episodes[:max_episodes]
-    template = info.get("data_path", "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet")
-    chunk_size = int(info.get("chunks_size", 1000))
     records = []
     for metadata in progress_iter(
         episodes,
@@ -130,8 +131,7 @@ def _demo_records(root: Path, task: str, max_episodes: int) -> tuple[dict[str, A
         unit="episode",
     ):
         episode = int(metadata["episode_index"])
-        path = root / template.format(episode_chunk=episode // chunk_size, episode_index=episode)
-        table = parquet.read_table(path, columns=["observation.state", "action"])
+        table = layout.read_episode(metadata, ["observation.state", "action"])
         records.append(
             {
                 "kind": "demo",
@@ -144,7 +144,9 @@ def _demo_records(root: Path, task: str, max_episodes: int) -> tuple[dict[str, A
                 "states": np.asarray(table["observation.state"].to_pylist(), dtype=np.float32),
                 "actions": np.asarray(table["action"].to_pylist(), dtype=np.float32),
                 "reference_actions": np.asarray(table["action"].to_pylist(), dtype=np.float32),
-                "videos": {camera: _video_source(root, info, episode, camera) for camera in CAMERAS},
+                "videos": {
+                    camera: _video_source(layout, metadata, camera) for camera in CAMERAS
+                },
             }
         )
     return info, records
@@ -209,7 +211,9 @@ def main(args: argparse.Namespace) -> None:
     output = Path(args.output).expanduser().resolve()
     if output.exists():
         raise FileExistsError(f"Replay buffer output already exists: {output}")
-    source_info, records = _demo_records(demo_root, args.task, args.max_demo_episodes)
+    source_info, records = _demo_records(
+        demo_root, args.task, args.max_demo_episodes, args.demo_format
+    )
     for index, raw_root in enumerate(args.rollout_root):
         records.extend(
             _rollout_records(
@@ -300,6 +304,11 @@ def main(args: argparse.Namespace) -> None:
             "total_chunks": (len(records) + args.chunk_size - 1) // args.chunk_size,
             "chunks_size": args.chunk_size,
             "splits": {"train": f"0:{len(records)}"},
+            "codebase_version": "v2.1",
+            "data_path": (
+                "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"
+            ),
+            "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
             "features": features,
         }
     )
@@ -336,6 +345,7 @@ def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--demo-root", required=True)
+    parser.add_argument("--demo-format", choices=("v2.1", "v3.0"), required=True)
     parser.add_argument("--rollout-root", action="append", default=[])
     parser.add_argument("--output", required=True)
     parser.add_argument("--task", default="")

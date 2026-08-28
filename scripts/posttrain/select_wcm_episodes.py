@@ -1,7 +1,7 @@
 """Rank RoboDojo demonstrations with a trained WCM and emit episode labels.
 
 The output is intentionally the same ``episode_index -> bool`` JSON accepted
-by ``prepare_pi05_dataset.py`` and the WCM data adapter.  This lets the direct
+by ``prepare_policy_dataset.py`` and the WCM data adapter.  This lets the direct
 Pi0.5 fine-tune path use WCM scores without changing OpenPI's trainer.
 """
 

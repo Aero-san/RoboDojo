@@ -394,6 +394,7 @@ case "${RECAP_REMOTE_ACTION}" in
       RECAP_REMOTE_TASK RECAP_REMOTE_EPISODES RECAP_REMOTE_LAYOUT_SEED
       RECAP_REMOTE_POLICY_GPU RECAP_REMOTE_ENV_GPU RECAP_REMOTE_ENV_CFG
       RECAP_REMOTE_ACTION_TYPE RECAP_REMOTE_POLICY_ENV RECAP_REMOTE_EVAL_ENV
+      RECAP_REMOTE_POLICY
     )
     for name in "${required[@]}"; do
       [[ -n "${!name:-}" ]] || { echo "Missing rollout variable: ${name}" >&2; exit 2; }
@@ -407,6 +408,22 @@ case "${RECAP_REMOTE_ACTION}" in
       touch "${checkpoint_dir}/.extracted"
     fi
     mkdir -p "${rollout_dir}/episodes"
+    case "${RECAP_REMOTE_POLICY}" in
+      pi05) policy_dir="${RECAP_REMOTE_REPO_ROOT}/XPolicyLab/policy/Pi_05" ;;
+      g05)
+        policy_dir="${RECAP_REMOTE_REPO_ROOT}/XPolicyLab/policy/G05"
+        [[ -n "${RECAP_REMOTE_G05_ROOT:-}" ]] || { echo "Missing RECAP_REMOTE_G05_ROOT" >&2; exit 2; }
+        export G05_ROOT="${RECAP_REMOTE_G05_ROOT}"
+        export G05_ACTION_TOKENIZER_PATH="${checkpoint_dir}/action_tokenizer.pt"
+        export ROBODOJO_G05_DATA_STATS="${checkpoint_dir}/dataset_stats.json"
+        export ROBODOJO_RECAP_INFERENCE_CONDITION=positive
+        export ROBODOJO_G05_ACTION_SOURCE="${RECAP_REMOTE_G05_ACTION_SOURCE:-fm}"
+        G05_CKPT_PATH=$(find "${checkpoint_dir}/checkpoints" -maxdepth 1 -type f \( -name 'step_*.pt' -o -name checkpoint \) | sort -V | tail -n 1)
+        [[ -n "${G05_CKPT_PATH}" ]] || { echo "Transferred G05 checkpoint is missing" >&2; exit 1; }
+        export G05_CKPT_PATH
+        ;;
+      *) echo "Unsupported RECAP policy: ${RECAP_REMOTE_POLICY}" >&2; exit 2 ;;
+    esac
     recorded=$(find "${rollout_dir}/episodes" -mindepth 2 -maxdepth 2 -name manifest.json -type f | wc -l)
     recorded="${recorded//[[:space:]]/}"
     (( recorded <= RECAP_REMOTE_EPISODES )) || {
@@ -420,7 +437,7 @@ case "${RECAP_REMOTE_ACTION}" in
       stop_remote_reservation
       ROBODOJO_DISABLE_PROGRESS=1 \
         bash "${RECAP_REMOTE_REPO_ROOT}/scripts/robodojo.sh" eval \
-          --policy-dir "${RECAP_REMOTE_REPO_ROOT}/XPolicyLab/policy/Pi_05" \
+          --policy-dir "${policy_dir}" \
           --task "${RECAP_REMOTE_TASK}" \
           --ckpt "${checkpoint_dir}" \
           --env-cfg "${RECAP_REMOTE_ENV_CFG}" \

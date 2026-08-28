@@ -10,7 +10,7 @@ install_gpu_reservation_exit_trap
 
 usage() {
   cat <<'EOF'
-Usage: bash scripts/posttrain/run_pi05_recap.sh --config PATH [--resume]
+Usage: bash scripts/posttrain/run_recap.sh --config PATH [--resume]
 
 Required:
   --config PATH                       Unified nested YAML configuration
@@ -19,7 +19,7 @@ Options:
   --resume                            Resume regardless of run.resume in YAML
   --help                              Show this message
 
-All hyperparameters are documented in configs/posttrain/pi05_recap.yaml.example.
+Examples: configs/posttrain/pi05_recap.yaml.example and g05_recap.yaml.example.
 EOF
 }
 
@@ -30,7 +30,7 @@ for argument in "$@"; do
   fi
 done
 find_posttrain_config "$@"
-load_pi05_recap_config "${POSTTRAIN_CONFIG_FILE}"
+load_recap_config "${POSTTRAIN_CONFIG_FILE}"
 
 ACTIVE_ROLLOUT_PID=""
 ACTIVE_ROLLOUT_MONITOR_PID=""
@@ -86,10 +86,24 @@ interrupt_rollout() {
 trap interrupt_rollout INT TERM
 
 PI_DIR="${ROOT_DIR}/XPolicyLab/policy/Pi_05"
-PI_PYTHON_BIN="${PI_PYTHON_BIN:-${PI_DIR}/openpi/.venv/bin/python}"
+G05_POLICY_DIR="${ROOT_DIR}/XPolicyLab/policy/G05"
+POLICY_NAME="${RECAP_POLICY_NAME:-pi05}"
+DEMO_FORMAT="${LEROBOT_DATA_FORMAT:-v2.1}"
+G05_ROOT="${G05_ROOT:-}"
+case "${POLICY_NAME}" in
+  pi05)
+    POLICY_DIR="${POLICY_DIR:-${PI_DIR}}"
+    POLICY_PYTHON_BIN="${POLICY_PYTHON_BIN:-${PI_DIR}/openpi/.venv/bin/python}"
+    ;;
+  g05)
+    POLICY_DIR="${POLICY_DIR:-${G05_POLICY_DIR}}"
+    POLICY_PYTHON_BIN="${POLICY_PYTHON_BIN:-}"
+    ;;
+  *) echo "Unsupported RECAP policy: ${POLICY_NAME}" >&2; exit 2 ;;
+esac
 WCM_PYTHON_BIN="${WCM_PYTHON_BIN:-${ROOT_DIR}/external_dependencies/WCM/.venv/bin/python}"
-POLICY_DIR="${POLICY_DIR:-${PI_DIR}}"
 POLICY_ENV="${POLICY_ENV:-openpi}"
+DATA_PYTHON_BIN="${DATA_PYTHON_BIN:-${POLICY_PYTHON_BIN}}"
 EVAL_ENV="${EVAL_ENV:-RoboDojo}"
 TASK_NAME="${TASK_NAME:-}"
 DEMO_ROOT="${DEMO_ROOT:-${ROOT_DIR}/data/RoboDojo_lerobot_v21_video}"
@@ -121,13 +135,19 @@ GUIDANCE_SCALE="${RECAP_GUIDANCE_SCALE:-1.0}"
 DEMO_SAMPLING_WEIGHT="${RECAP_DEMO_SAMPLING_WEIGHT:-1.0}"
 ROLLOUT_SAMPLING_WEIGHT="${RECAP_ROLLOUT_SAMPLING_WEIGHT:-1.0}"
 FAILURE_PENALTY="${WCM_FAILURE_PENALTY:-300}"
-NUM_TRAIN_STEPS="${OPENPI_NUM_TRAIN_STEPS:-3000}"
-POLICY_WARMUP_STEPS="${OPENPI_WARMUP_STEPS:-}"
+if [[ "${POLICY_NAME}" == "g05" ]]; then
+  NUM_TRAIN_STEPS="${G05_NUM_TRAIN_STEPS:-3000}"
+  POLICY_WARMUP_STEPS="${G05_WARMUP_STEPS:-500}"
+else
+  NUM_TRAIN_STEPS="${OPENPI_NUM_TRAIN_STEPS:-3000}"
+  POLICY_WARMUP_STEPS="${OPENPI_WARMUP_STEPS:-}"
+fi
 POLICY_EVAL_INTERVAL="${RECAP_POLICY_EVAL_INTERVAL:-1000}"
 POLICY_EVAL_EPISODES="${RECAP_POLICY_EVAL_EPISODES:-20}"
 POLICY_EVAL_REUSE_ROLLOUT="${RECAP_POLICY_EVAL_REUSE_ROLLOUT:-1}"
 POLICY_EVAL_LAYOUT_SEED="${RECAP_POLICY_EVAL_LAYOUT_SEED:-1}"
 POLICY_EVAL_LAYOUT_OFFSET="${RECAP_POLICY_EVAL_LAYOUT_OFFSET:-0}"
+REMOTE_G05_ROOT="${RECAP_REMOTE_G05_ROOT:-${G05_ROOT}}"
 NORM_ASSET_ID="${OPENPI_NORM_ASSET_ID:-}"
 RESUME_RUN="${RECAP_RESUME:-0}"
 REUSE_COMPLETED_ARTIFACTS="${RECAP_REUSE_COMPLETED_ARTIFACTS:-0}"
@@ -149,9 +169,9 @@ TRAINING_REMOTE_WORK_ROOT="${RECAP_TRAINING_REMOTE_WORK_ROOT:-}"
 TRAINING_REMOTE_ZSTD_BIN="${RECAP_TRAINING_REMOTE_ZSTD_BIN:-zstd}"
 TRAINING_REMOTE_CONDA_BIN="${RECAP_TRAINING_REMOTE_CONDA_BIN:-conda}"
 TRAINING_REMOTE_PYTHON_BIN="${RECAP_TRAINING_REMOTE_PYTHON_BIN:-python}"
-TRAINING_REMOTE_PI_PYTHON="${RECAP_TRAINING_REMOTE_PI_PYTHON:-}"
+TRAINING_REMOTE_POLICY_PYTHON="${RECAP_TRAINING_REMOTE_POLICY_PYTHON:-}"
 TRAINING_REMOTE_WCM_PYTHON="${RECAP_TRAINING_REMOTE_WCM_PYTHON:-}"
-TRAINING_REMOTE_PI_GPUS="${RECAP_TRAINING_REMOTE_PI05_GPUS:-0,1}"
+TRAINING_REMOTE_POLICY_GPUS="${RECAP_TRAINING_REMOTE_POLICY_GPUS:-0,1}"
 TRAINING_REMOTE_WCM_GPUS="${RECAP_TRAINING_REMOTE_WCM_GPUS:-0,1}"
 TRAINING_REMOTE_VALUE_VIDEO_GPU="${RECAP_TRAINING_REMOTE_VALUE_VIDEO_GPU:-0}"
 TRAINING_REMOTE_RENDER_VALUE_VIDEO="${RECAP_TRAINING_REMOTE_RENDER_VALUE_VIDEO:-1}"
@@ -171,11 +191,20 @@ done
 
 [[ -n "${TASK_NAME}" ]] || { echo "--task is required" >&2; exit 2; }
 [[ -n "${INITIAL_POLICY_CHECKPOINT}" ]] || { echo "--initial-policy-checkpoint is required" >&2; exit 2; }
-[[ -x "${PI_PYTHON_BIN}" ]] || { echo "Pi0.5 Python not found: ${PI_PYTHON_BIN}" >&2; exit 1; }
+[[ -x "${DATA_PYTHON_BIN}" ]] || { echo "Policy dataset Python not found: ${DATA_PYTHON_BIN}" >&2; exit 1; }
+if (( ! TRAINING_REMOTE_ENABLED )); then
+  [[ -x "${POLICY_PYTHON_BIN}" ]] || { echo "${POLICY_NAME} Python not found: ${POLICY_PYTHON_BIN}" >&2; exit 1; }
+fi
 [[ -x "${WCM_PYTHON_BIN}" ]] || { echo "WCM Python not found: ${WCM_PYTHON_BIN}" >&2; exit 1; }
 [[ -f "${WCM_CONFIG}" ]] || { echo "WCM config not found: ${WCM_CONFIG}" >&2; exit 1; }
 [[ -f "${DEMO_ROOT}/meta/info.json" ]] || { echo "Demo dataset not found: ${DEMO_ROOT}" >&2; exit 1; }
-[[ -d "${INITIAL_POLICY_CHECKPOINT}" ]] || { echo "Initial Pi0.5 checkpoint not found: ${INITIAL_POLICY_CHECKPOINT}" >&2; exit 1; }
+if [[ "${POLICY_NAME}" == "g05" ]]; then
+  [[ -n "${G05_ROOT}" ]] || { echo "G05_ROOT is required" >&2; exit 2; }
+  export G05_ROOT
+  export ROBODOJO_G05_ACTION_SOURCE="${ROBODOJO_G05_ACTION_SOURCE:-fm}"
+  export ROBODOJO_RECAP_INFERENCE_CONDITION=positive
+fi
+[[ -e "${INITIAL_POLICY_CHECKPOINT}" ]] || { echo "Initial ${POLICY_NAME} checkpoint not found: ${INITIAL_POLICY_CHECKPOINT}" >&2; exit 1; }
 if [[ -n "${INITIAL_WCM_CHECKPOINT}" && ! -f "${INITIAL_WCM_CHECKPOINT}" ]]; then
   echo "Initial WCM checkpoint not found: ${INITIAL_WCM_CHECKPOINT}" >&2
   exit 1
@@ -292,17 +321,17 @@ WCM_TRAIN_GPUS="${WCM_TRAIN_GPUS:-${TRAIN_GPUS}}"
 parse_gpu_ids "${WCM_TRAIN_GPUS}" WCM_TRAIN_GPU_IDS
 TRAIN_GPUS=$(IFS=','; echo "${POLICY_TRAIN_GPU_IDS[*]}")
 WCM_TRAIN_GPUS=$(IFS=','; echo "${WCM_TRAIN_GPU_IDS[*]}")
-declare -a TRAINING_REMOTE_PI_GPU_IDS TRAINING_REMOTE_WCM_GPU_IDS
-parse_gpu_ids "${TRAINING_REMOTE_PI_GPUS}" TRAINING_REMOTE_PI_GPU_IDS
+declare -a TRAINING_REMOTE_POLICY_GPU_IDS TRAINING_REMOTE_WCM_GPU_IDS
+parse_gpu_ids "${TRAINING_REMOTE_POLICY_GPUS}" TRAINING_REMOTE_POLICY_GPU_IDS
 parse_gpu_ids "${TRAINING_REMOTE_WCM_GPUS}" TRAINING_REMOTE_WCM_GPU_IDS
-TRAINING_REMOTE_PI_GPUS=$(IFS=','; echo "${TRAINING_REMOTE_PI_GPU_IDS[*]}")
+TRAINING_REMOTE_POLICY_GPUS=$(IFS=','; echo "${TRAINING_REMOTE_POLICY_GPU_IDS[*]}")
 TRAINING_REMOTE_WCM_GPUS=$(IFS=','; echo "${TRAINING_REMOTE_WCM_GPU_IDS[*]}")
 GPU_COUNT="${#POLICY_TRAIN_GPU_IDS[@]}"
 WCM_GPU_COUNT="${#WCM_TRAIN_GPU_IDS[@]}"
-EFFECTIVE_PI_GPU_COUNT="${GPU_COUNT}"
+EFFECTIVE_POLICY_GPU_COUNT="${GPU_COUNT}"
 EFFECTIVE_WCM_GPU_COUNT="${WCM_GPU_COUNT}"
 if (( TRAINING_REMOTE_ENABLED )); then
-  EFFECTIVE_PI_GPU_COUNT="${#TRAINING_REMOTE_PI_GPU_IDS[@]}"
+  EFFECTIVE_POLICY_GPU_COUNT="${#TRAINING_REMOTE_POLICY_GPU_IDS[@]}"
   EFFECTIVE_WCM_GPU_COUNT="${#TRAINING_REMOTE_WCM_GPU_IDS[@]}"
 fi
 POLICY_GPU="${POLICY_GPU:-${POLICY_TRAIN_GPU_IDS[0]}}"
@@ -317,10 +346,11 @@ fi
 [[ "${POLICY_GPU}" =~ ^[0-9]+$ ]] || { echo "--policy-gpu must be one numeric GPU id" >&2; exit 2; }
 [[ "${ENV_GPU}" =~ ^[0-9]+$ ]] || { echo "--env-gpu must be one numeric GPU id" >&2; exit 2; }
 [[ "${VALUE_VIDEO_GPU}" =~ ^[0-9]+$ ]] || { echo "RECAP_VALUE_VIDEO_GPU must be one numeric GPU id" >&2; exit 2; }
-FSDP_DEVICES="${OPENPI_FSDP_DEVICES:-$(( EFFECTIVE_PI_GPU_COUNT < 2 ? 1 : 2 ))}"
+if [[ "${POLICY_NAME}" == "pi05" ]]; then
+FSDP_DEVICES="${OPENPI_FSDP_DEVICES:-$(( EFFECTIVE_POLICY_GPU_COUNT < 2 ? 1 : 2 ))}"
 [[ "${FSDP_DEVICES}" =~ ^[1-9][0-9]*$ ]] || { echo "OPENPI_FSDP_DEVICES must be positive" >&2; exit 2; }
-(( FSDP_DEVICES <= EFFECTIVE_PI_GPU_COUNT && EFFECTIVE_PI_GPU_COUNT % FSDP_DEVICES == 0 )) || {
-  echo "OPENPI_FSDP_DEVICES=${FSDP_DEVICES} must divide the ${EFFECTIVE_PI_GPU_COUNT} effective Pi0.5 training GPUs" >&2
+(( FSDP_DEVICES <= EFFECTIVE_POLICY_GPU_COUNT && EFFECTIVE_POLICY_GPU_COUNT % FSDP_DEVICES == 0 )) || {
+  echo "OPENPI_FSDP_DEVICES=${FSDP_DEVICES} must divide the ${EFFECTIVE_POLICY_GPU_COUNT} effective Pi0.5 training GPUs" >&2
   exit 2
 }
 case "${OPENPI_PARAMETER_DTYPE}" in
@@ -337,17 +367,20 @@ esac
 }
 if [[ -n "${OPENPI_BATCH_SIZE:-}" ]]; then
   [[ "${OPENPI_BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]] || { echo "OPENPI_BATCH_SIZE must be positive" >&2; exit 2; }
-  (( OPENPI_BATCH_SIZE % EFFECTIVE_PI_GPU_COUNT == 0 )) || {
-    echo "OPENPI_BATCH_SIZE=${OPENPI_BATCH_SIZE} must be divisible by ${EFFECTIVE_PI_GPU_COUNT} effective Pi0.5 training GPUs" >&2
+  (( OPENPI_BATCH_SIZE % EFFECTIVE_POLICY_GPU_COUNT == 0 )) || {
+    echo "OPENPI_BATCH_SIZE=${OPENPI_BATCH_SIZE} must be divisible by ${EFFECTIVE_POLICY_GPU_COUNT} effective Pi0.5 training GPUs" >&2
     exit 2
   }
 fi
 
 echo "[RECAP devices] WCM DDP=${WCM_TRAIN_GPUS} (${WCM_GPU_COUNT} processes)"
-echo "[RECAP devices] Pi0.5=${TRAIN_GPUS} (${GPU_COUNT} local devices, effective=${EFFECTIVE_PI_GPU_COUNT}, FSDP=${FSDP_DEVICES}, data_parallel=$((EFFECTIVE_PI_GPU_COUNT / FSDP_DEVICES)))"
+else
+  FSDP_DEVICES=1
+fi
+echo "[RECAP devices] ${POLICY_NAME}=${TRAIN_GPUS} (${GPU_COUNT} local devices, effective=${EFFECTIVE_POLICY_GPU_COUNT}, FSDP=${FSDP_DEVICES}, data_parallel=$((EFFECTIVE_POLICY_GPU_COUNT / FSDP_DEVICES)))"
 echo "[RECAP devices] rollout policy=${POLICY_GPU}, Isaac Sim=${ENV_GPU} (one stateful episode is sequential)"
 if (( TRAINING_REMOTE_ENABLED )); then
-  echo "[RECAP devices] remote training=${TRAINING_REMOTE_HOST} Pi0.5=${TRAINING_REMOTE_PI_GPUS}, WCM=${TRAINING_REMOTE_WCM_GPUS}"
+  echo "[RECAP devices] remote training=${TRAINING_REMOTE_HOST} ${POLICY_NAME}=${TRAINING_REMOTE_POLICY_GPUS}, WCM=${TRAINING_REMOTE_WCM_GPUS}"
 fi
 if (( REMOTE_ENABLED )); then
   echo "[RECAP devices] remote rollout=${REMOTE_HOST} policy=${REMOTE_POLICY_GPU}, Isaac Sim=${REMOTE_ENV_GPU}"
@@ -374,7 +407,7 @@ if (( REMOTE_ENABLED )); then
   "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/remote_recap.py" "${REMOTE_PREFLIGHT_ARGS[@]}"
 fi
 if (( TRAINING_REMOTE_ENABLED )); then
-  echo "[RECAP remote training] checking host=${TRAINING_REMOTE_HOST}, GPUs=${TRAINING_REMOTE_PI_GPUS}/${TRAINING_REMOTE_WCM_GPUS}"
+  echo "[RECAP remote training] checking host=${TRAINING_REMOTE_HOST}, GPUs=${TRAINING_REMOTE_POLICY_GPUS}/${TRAINING_REMOTE_WCM_GPUS}"
   TRAINING_PREFLIGHT_ARGS=(
     preflight
     --host "${TRAINING_REMOTE_HOST}"
@@ -384,7 +417,11 @@ if (( TRAINING_REMOTE_ENABLED )); then
     --remote-conda-bin "${TRAINING_REMOTE_CONDA_BIN}"
     --remote-python-bin "${TRAINING_REMOTE_PYTHON_BIN}"
   )
-  for training_gpu in "${TRAINING_REMOTE_PI_GPU_IDS[@]}" "${TRAINING_REMOTE_WCM_GPU_IDS[@]}" "${TRAINING_REMOTE_VALUE_VIDEO_GPU}"; do
+  TRAINING_PREFLIGHT_ARGS+=(--policy "${POLICY_NAME}" --g05-root "${G05_ROOT}")
+  if [[ -n "${TRAINING_REMOTE_POLICY_PYTHON}" ]]; then
+    TRAINING_PREFLIGHT_ARGS+=(--remote-policy-python "${TRAINING_REMOTE_POLICY_PYTHON}")
+  fi
+  for training_gpu in "${TRAINING_REMOTE_POLICY_GPU_IDS[@]}" "${TRAINING_REMOTE_WCM_GPU_IDS[@]}" "${TRAINING_REMOTE_VALUE_VIDEO_GPU}"; do
     TRAINING_PREFLIGHT_ARGS+=(--gpu "${training_gpu}")
   done
   "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/remote_training.py" "${TRAINING_PREFLIGHT_ARGS[@]}"
@@ -400,7 +437,7 @@ else
   mkdir -p "${RUN_ROOT}"
 fi
 RESOLVED_CONFIG="${RUN_ROOT}/resolved_config.yaml"
-write_resolved_pi05_recap_config "${POSTTRAIN_CONFIG_FILE}" "${RESOLVED_CONFIG}"
+write_resolved_recap_config "${POSTTRAIN_CONFIG_FILE}" "${RESOLVED_CONFIG}"
 LEROBOT_HOME="${RUN_ROOT}/lerobot"
 mkdir -p "${LEROBOT_HOME}"
 
@@ -412,7 +449,7 @@ artifact_complete() {
   if (( REUSE_COMPLETED_ARTIFACTS )); then fingerprint=""; fi
   "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/recap_artifacts.py" check \
     --stage "${stage}" --path "${path}" --expected "${expected}" \
-    --fingerprint "${fingerprint}" >/dev/null 2>&1
+    --fingerprint "${fingerprint}" --policy "${POLICY_NAME}" >/dev/null 2>&1
 }
 
 mark_artifact() {
@@ -453,6 +490,8 @@ run_policy_evaluation() {
       --remote-zstd-bin "${REMOTE_ZSTD_BIN}" \
       --remote-conda-bin "${REMOTE_CONDA_BIN}" \
       --remote-python-bin "${REMOTE_PYTHON_BIN}" \
+      --policy "${POLICY_NAME}" --g05-root "${REMOTE_G05_ROOT}" \
+      --g05-action-source "${ROBODOJO_G05_ACTION_SOURCE:-fm}" \
       --checkpoint "${checkpoint}" --output "${output}" --task "${TASK_NAME}" \
       --episodes "${episodes}" --layout-seed "${EFFECTIVE_POLICY_EVAL_LAYOUT_SEED}" \
       --layout-offset "${layout_offset}" \
@@ -623,13 +662,40 @@ run_remote_pi05_stage() {
   stage_args=(
     pi05 "${common_args[@]}"
     --job-id "${TASK_SLUG}-${RUN_CONFIG_FP:0:12}-iter-$(printf '%02d' "${iteration}")-pi05"
-    --dataset "${PI_DATASET}" --norm-stats "${NORM_STATS}" --init-policy "${train_init}"
-    --output "${output}" --gpus "${TRAINING_REMOTE_PI_GPUS}"
+    --dataset "${POLICY_DATASET}" --norm-stats "${NORM_STATS}" --init-policy "${train_init}"
+    --output "${output}" --gpus "${TRAINING_REMOTE_POLICY_GPUS}"
     --xla-memory-fraction "${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.9}"
   )
-  [[ -z "${TRAINING_REMOTE_PI_PYTHON}" ]] || stage_args+=(--remote-pi-python "${TRAINING_REMOTE_PI_PYTHON}")
+  [[ -z "${TRAINING_REMOTE_POLICY_PYTHON}" ]] || stage_args+=(--remote-policy-python "${TRAINING_REMOTE_POLICY_PYTHON}")
   if (( resume_requested )); then stage_args+=(--resume); fi
   for train_arg in "${TRAIN_ARGS[@]}"; do stage_args+=(--train-arg "${train_arg}"); done
+  stop_gpu_reservation
+  "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/remote_training.py" "${stage_args[@]}"
+}
+
+run_remote_g05_stage() {
+  local train_init="$1" output="$2" resume_requested="$3"
+  local -a stage_args common_args
+  remote_training_common_args common_args
+  stage_args=(
+    g05 "${common_args[@]}"
+    --job-id "${TASK_SLUG}-${RUN_CONFIG_FP:0:12}-iter-$(printf '%02d' "${iteration}")-g05"
+    --dataset "${POLICY_DATASET}" --init-policy "${train_init}"
+    --output "${output}" --gpus "${TRAINING_REMOTE_POLICY_GPUS}"
+    --g05-root "${G05_ROOT}" --processor-path "${G05_PROCESSOR_PATH}"
+    --task-config "${G05_TASK_CONFIG}"
+    --experiment-name "recap-${TASK_SLUG}-iter-${iteration}"
+    --steps "${NUM_TRAIN_STEPS}" --save-interval "${POLICY_EVAL_INTERVAL}"
+    --batch-size "${G05_BATCH_SIZE}" --num-workers "${G05_NUM_WORKERS}"
+    --grad-accumulation-steps "${G05_GRAD_ACCUMULATION_STEPS}"
+    --learning-rate "${G05_LEARNING_RATE}" --warmup-steps "${G05_WARMUP_STEPS}"
+    --decay-learning-rate "${G05_DECAY_LEARNING_RATE}"
+    --decay-start-ratio "${G05_DECAY_START_RATIO}"
+    --weight-decay "${G05_WEIGHT_DECAY}"
+  )
+  stage_args+=(--remote-policy-python "${TRAINING_REMOTE_POLICY_PYTHON}")
+  if [[ "${G05_WANDB_ENABLED:-1}" == "1" ]]; then stage_args+=(--wandb); else stage_args+=(--no-wandb); fi
+  if (( resume_requested )); then stage_args+=(--resume); fi
   stop_gpu_reservation
   "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/remote_training.py" "${stage_args[@]}"
 }
@@ -662,7 +728,8 @@ print(sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
 ' "${WCM_CONFIG}")
 
 RUN_CONFIG_FP=$(stage_fingerprint run \
-  "task=${TASK_NAME}" "demo_root=$(realpath "${DEMO_ROOT}")" \
+  "task=${TASK_NAME}" "policy=${POLICY_NAME}" \
+  "demo_root=$(realpath "${DEMO_ROOT}")" "demo_format=${DEMO_FORMAT}" \
   "initial_policy=$(realpath "${INITIAL_POLICY_CHECKPOINT}")" \
   "initial_wcm=${INITIAL_WCM_CHECKPOINT}" \
   "rollout_episodes=${ROLLOUT_EPISODES}" "min_rollouts=${MIN_ROLLOUT_EPISODES}" \
@@ -682,7 +749,7 @@ RUN_CONFIG_FP=$(stage_fingerprint run \
   "train_config=${TRAIN_CONFIG}" "finetune_mode=${FINETUNE_MODE}" \
   "parameter_dtype=${OPENPI_PARAMETER_DTYPE}" "sharding_strategy=${OPENPI_SHARDING_STRATEGY}" \
   "cpu_offload=${OPENPI_CPU_OFFLOAD}" "ema_decay=${OPENPI_EMA_DECAY}" \
-  "fsdp_devices=${FSDP_DEVICES}" "pi_gpu_count=${EFFECTIVE_PI_GPU_COUNT}" \
+  "fsdp_devices=${FSDP_DEVICES}" "pi_gpu_count=${EFFECTIVE_POLICY_GPU_COUNT}" \
   "action_expert_variant=${OPENPI_ACTION_EXPERT_VARIANT:-}" \
   "paligemma_variant=${OPENPI_PALIGEMMA_VARIANT:-}" "data_mode=${OPENPI_DATA_MODE}" \
   "train_steps=${NUM_TRAIN_STEPS}" "warmup_steps=${POLICY_WARMUP_STEPS}" \
@@ -694,6 +761,7 @@ RUN_CONFIG_FP=$(stage_fingerprint run \
   "env_cfg=${ENV_CFG_TYPE}" "action_type=${ACTION_TYPE}" \
   "policy_env=${POLICY_ENV}" "eval_env=${EVAL_ENV}" "seed=${SEED}")
 
+CONFIGURED_G05_ACTION_TOKENIZER="${G05_ACTION_TOKENIZER_PATH:-}"
 FIXED_NORM_STATS="${RUN_ROOT}/fixed_norm_stats"
 NORM_FP=$(stage_fingerprint fixed_norm "run=${RUN_CONFIG_FP}" "asset_id=${NORM_ASSET_ID}")
 ACTIVE_STAGE_FP="${NORM_FP}"
@@ -701,16 +769,27 @@ if [[ "${RESUME_RUN}" == "1" ]] && artifact_complete norm "${FIXED_NORM_STATS}" 
   echo "[RECAP resume] reusing fixed initial-checkpoint normalization"
 else
   archive_incomplete "${FIXED_NORM_STATS}"
-  "${PI_PYTHON_BIN}" "${SCRIPT_DIR}/prepare_fixed_pi05_norm_stats.py" \
-    --checkpoint "${INITIAL_POLICY_CHECKPOINT}" --output "${FIXED_NORM_STATS}" \
-    --asset-id "${NORM_ASSET_ID}"
+  if [[ "${POLICY_NAME}" == "g05" ]]; then
+    "${DATA_PYTHON_BIN}" "${SCRIPT_DIR}/prepare_g05_assets.py" \
+      --checkpoint "${INITIAL_POLICY_CHECKPOINT}" --output "${FIXED_NORM_STATS}" \
+      --dataset-stats "${ROBODOJO_G05_DATA_STATS:-}" \
+      --action-tokenizer "${CONFIGURED_G05_ACTION_TOKENIZER}"
+  else
+    "${DATA_PYTHON_BIN}" "${SCRIPT_DIR}/prepare_fixed_pi05_norm_stats.py" \
+      --checkpoint "${INITIAL_POLICY_CHECKPOINT}" --output "${FIXED_NORM_STATS}" \
+      --asset-id "${NORM_ASSET_ID}"
+  fi
   mark_artifact norm "${FIXED_NORM_STATS}"
+fi
+if [[ "${POLICY_NAME}" == "g05" ]]; then
+  export G05_ACTION_TOKENIZER_PATH="${FIXED_NORM_STATS}/action_tokenizer.pt"
+  export ROBODOJO_G05_DATA_STATS="${FIXED_NORM_STATS}/dataset_stats.json"
 fi
 
 CURRENT_POLICY="${INITIAL_POLICY_CHECKPOINT}"
 PREVIOUS_WCM="${INITIAL_WCM_CHECKPOINT}"
 ROLLOUT_ROOTS=()
-PREVIOUS_PI_DATASET=""
+PREVIOUS_POLICY_DATASET=""
 PREVIOUS_BUFFER=""
 PREVIOUS_WCM_INPUT_EPISODES=0
 
@@ -723,9 +802,9 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   WCM_OUTPUT="${ITER_DIR}/wcm"
   ADVANTAGES="${ITER_DIR}/recap_advantages.jsonl"
   REPO_ID="RoboDojo-recap-${TASK_SLUG}-iter-${iteration}"
-  POLICY_OUTPUT="${ITER_DIR}/pi05"
+  POLICY_OUTPUT="${ITER_DIR}/${POLICY_NAME}"
   NORM_STATS="${FIXED_NORM_STATS}"
-  PI_DATASET="${LEROBOT_HOME}/${REPO_ID}"
+  POLICY_DATASET="${LEROBOT_HOME}/${REPO_ID}"
   REBUILD_DOWNSTREAM=0
   mkdir -p "${ITER_DIR}"
 
@@ -839,6 +918,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     else
       BUFFER_ARGS=(
         --demo-root "${DEMO_ROOT}"
+        --demo-format "${DEMO_FORMAT}"
         --output "${BUFFER_ROOT}"
         --task "${TASK_NAME}"
         --max-demo-episodes "${MAX_DEMO_EPISODES}"
@@ -930,6 +1010,8 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
           --host "${REMOTE_HOST}" --remote-repo-root "${REMOTE_REPO_ROOT}" \
           --remote-work-root "${REMOTE_WORK_ROOT}" --job-id "${REMOTE_JOB_ID}" \
           --remote-zstd-bin "${REMOTE_ZSTD_BIN}" \
+          --policy "${POLICY_NAME}" --g05-root "${REMOTE_G05_ROOT}" \
+          --g05-action-source "${ROBODOJO_G05_ACTION_SOURCE:-fm}" \
           --remote-conda-bin "${REMOTE_CONDA_BIN}" \
           --remote-python-bin "${REMOTE_PYTHON_BIN}" \
           --checkpoint "${CURRENT_POLICY}" --output "${RAW_ROLLOUTS}" \
@@ -954,7 +1036,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
         echo "[RECAP ${iteration}/${ITERATIONS}] building demonstration-only first WCM buffer"
         start_gpu_reservation "${WCM_TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "RECAP demonstration buffer preparation"
         "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/build_replay_buffer.py" \
-          --demo-root "${DEMO_ROOT}" --output "${WCM_INPUT_BUFFER}" \
+          --demo-root "${DEMO_ROOT}" --demo-format "${DEMO_FORMAT}" --output "${WCM_INPUT_BUFFER}" \
           --task "${TASK_NAME}" --max-demo-episodes "${MAX_DEMO_EPISODES}" \
           --seed "$((SEED + iteration))"
         mark_artifact buffer "${WCM_INPUT_BUFFER}"
@@ -1102,31 +1184,34 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   fi
 
   if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && \
-     artifact_complete pi_dataset "${PI_DATASET}" "${BUFFER_EPISODES}"; then
-    reuse_stage pi_dataset
+     artifact_complete policy_dataset "${POLICY_DATASET}" "${BUFFER_EPISODES}"; then
+    reuse_stage policy_dataset
   else
-    if [[ -e "${PI_DATASET}" ]] && \
-       ! artifact_fingerprint_matches pi_dataset "${PI_DATASET}"; then
-      archive_incomplete "${PI_DATASET}"
+    if [[ -e "${POLICY_DATASET}" ]] && \
+       ! artifact_fingerprint_matches policy_dataset "${POLICY_DATASET}"; then
+      archive_incomplete "${POLICY_DATASET}"
     fi
-    echo "[RECAP ${iteration}/${ITERATIONS}] incrementally updating advantage-conditioned Pi0.5 dataset"
-    start_gpu_reservation "${TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "RECAP Pi0.5 dataset preparation"
-    PI_DATASET_ARGS=(
+    echo "[RECAP ${iteration}/${ITERATIONS}] incrementally updating advantage-conditioned ${POLICY_NAME} dataset"
+    start_gpu_reservation "${TRAIN_GPUS}" "${WCM_PYTHON_BIN}" "RECAP ${POLICY_NAME} dataset preparation"
+    POLICY_DATASET_ARGS=(
       --dataset-root "${BUFFER_ROOT}"
       --repo-id "${REPO_ID}"
       --advantage-labels "${ADVANTAGES}"
       --task "${TASK_NAME}"
+      --policy "${POLICY_NAME}"
+      --unconditional-probability "${UNCONDITIONAL_PROB}"
+      --seed "$((SEED + iteration))"
       --mode "${OPENPI_DATA_MODE:-video}"
     )
-    if [[ ! -e "${PI_DATASET}" && -n "${PREVIOUS_PI_DATASET}" ]]; then
-      PI_DATASET_ARGS+=(--previous-dataset "${PREVIOUS_PI_DATASET}")
+    if [[ ! -e "${POLICY_DATASET}" && -n "${PREVIOUS_POLICY_DATASET}" ]]; then
+      POLICY_DATASET_ARGS+=(--previous-dataset "${PREVIOUS_POLICY_DATASET}")
     fi
-    HF_LEROBOT_HOME="${LEROBOT_HOME}" "${PI_PYTHON_BIN}" \
-      "${SCRIPT_DIR}/prepare_pi05_recap_dataset.py" "${PI_DATASET_ARGS[@]}"
-    mark_artifact pi_dataset "${PI_DATASET}"
+    HF_LEROBOT_HOME="${LEROBOT_HOME}" "${DATA_PYTHON_BIN}" \
+      "${SCRIPT_DIR}/prepare_recap_dataset.py" "${POLICY_DATASET_ARGS[@]}"
+    mark_artifact policy_dataset "${POLICY_DATASET}"
     REBUILD_DOWNSTREAM=1
   fi
-  PREVIOUS_PI_DATASET="${PI_DATASET}"
+  PREVIOUS_POLICY_DATASET="${POLICY_DATASET}"
 
   TRAIN_INIT="${CURRENT_POLICY}"
   TRAIN_ARGS=(
@@ -1180,28 +1265,54 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     reuse_stage policy
     stop_gpu_reservation
   else
-    PI05_RESUME_REQUESTED=0
+    POLICY_RESUME_REQUESTED=0
     if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && artifact_complete policy_resume "${POLICY_OUTPUT}"; then
-      echo "[RECAP resume] resuming iteration ${iteration} Pi0.5 optimizer checkpoint"
+      echo "[RECAP resume] resuming iteration ${iteration} ${POLICY_NAME} optimizer checkpoint"
       TRAIN_ARGS+=(--resume)
-      PI05_RESUME_REQUESTED=1
+      POLICY_RESUME_REQUESTED=1
     else
       archive_incomplete "${POLICY_OUTPUT}"
       TRAIN_ARGS+=(--init-checkpoint "${TRAIN_INIT}")
     fi
-    echo "[RECAP ${iteration}/${ITERATIONS}] updating Pi0.5 with advantage-conditioned flow matching"
+    echo "[RECAP ${iteration}/${ITERATIONS}] updating ${POLICY_NAME} with RECAP conditioning"
     echo "using finetune mode ${FINETUNE_MODE}"
     if (( TRAINING_REMOTE_ENABLED )); then
-      run_remote_pi05_stage "${TRAIN_INIT}" "${POLICY_OUTPUT}" "${PI05_RESUME_REQUESTED}"
+      if [[ "${POLICY_NAME}" == "g05" ]]; then
+        run_remote_g05_stage "${TRAIN_INIT}" "${POLICY_OUTPUT}" "${POLICY_RESUME_REQUESTED}"
+      else
+        run_remote_pi05_stage "${TRAIN_INIT}" "${POLICY_OUTPUT}" "${POLICY_RESUME_REQUESTED}"
+      fi
     else
       stop_gpu_reservation
+      if [[ "${POLICY_NAME}" == "g05" ]]; then
+        G05_RESUME_ARGS=()
+        if (( POLICY_RESUME_REQUESTED )); then G05_RESUME_ARGS+=(--resume); fi
+        G05_WANDB_ARGS=(--wandb)
+        if [[ "${G05_WANDB_ENABLED:-1}" == "0" ]]; then G05_WANDB_ARGS=(--no-wandb); fi
+        CUDA_VISIBLE_DEVICES="${TRAIN_GPUS}" "${POLICY_PYTHON_BIN}" "${SCRIPT_DIR}/train_g05.py" \
+          --g05-root "${G05_ROOT}" --dataset "${POLICY_DATASET}" --output "${POLICY_OUTPUT}" \
+          --init-checkpoint "${TRAIN_INIT}" \
+          --dataset-stats "${FIXED_NORM_STATS}/dataset_stats.json" \
+          --action-tokenizer "${FIXED_NORM_STATS}/action_tokenizer.pt" \
+          --processor-path "${G05_PROCESSOR_PATH}" --task-config "${G05_TASK_CONFIG}" \
+          --experiment-name "recap-${TASK_SLUG}-iter-${iteration}" \
+          --gpus "${GPU_COUNT}" --steps "${NUM_TRAIN_STEPS}" \
+          --save-interval "${POLICY_EVAL_INTERVAL}" --batch-size "${G05_BATCH_SIZE}" \
+          --num-workers "${G05_NUM_WORKERS}" \
+          --grad-accumulation-steps "${G05_GRAD_ACCUMULATION_STEPS}" \
+          --learning-rate "${G05_LEARNING_RATE}" --warmup-steps "${G05_WARMUP_STEPS}" \
+          --decay-learning-rate "${G05_DECAY_LEARNING_RATE}" \
+          --decay-start-ratio "${G05_DECAY_START_RATIO}" \
+          --weight-decay "${G05_WEIGHT_DECAY}" "${G05_WANDB_ARGS[@]}" "${G05_RESUME_ARGS[@]}"
+      else
       HF_LEROBOT_HOME="${LEROBOT_HOME}" \
       CUDA_VISIBLE_DEVICES="${TRAIN_GPUS}" \
       XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.9}" \
-        "${PI_PYTHON_BIN}" "${SCRIPT_DIR}/train_pi05.py" "${TRAIN_ARGS[@]}"
+        "${POLICY_PYTHON_BIN}" "${SCRIPT_DIR}/train_pi05.py" "${TRAIN_ARGS[@]}"
+      fi
     fi
     artifact_complete policy "${POLICY_OUTPUT}" "${NUM_TRAIN_STEPS}" "" || {
-      echo "Pi0.5 did not produce required final checkpoint step $((NUM_TRAIN_STEPS - 1))" >&2
+      echo "${POLICY_NAME} did not produce required final checkpoint step $((NUM_TRAIN_STEPS - 1))" >&2
       exit 1
     }
     mark_artifact policy "${POLICY_OUTPUT}"
@@ -1221,16 +1332,28 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     --baseline-rollouts "${BASELINE_EVAL}"
     --output "${ITER_DIR}/selection.json"
   )
-  mapfile -t POLICY_CANDIDATES < <(
-    find "${POLICY_OUTPUT}" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' -printf '%f\n' | sort -n
-  )
+  if [[ "${POLICY_NAME}" == "g05" ]]; then
+    mapfile -t POLICY_CANDIDATES < <(
+      find "${POLICY_OUTPUT}/checkpoints" -maxdepth 1 -type f -name 'step_*.pt' -printf '%p\n' | sort -V
+    )
+  else
+    mapfile -t POLICY_CANDIDATES < <(
+      find "${POLICY_OUTPUT}" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' -printf '%p\n' | sort -V
+    )
+  fi
   (( ${#POLICY_CANDIDATES[@]} >= 2 )) || {
     echo "Expected at least one intermediate and one final policy checkpoint; " \
          "reduce RECAP_POLICY_EVAL_INTERVAL=${POLICY_EVAL_INTERVAL}." >&2
     exit 1
   }
   for candidate_step in "${POLICY_CANDIDATES[@]}"; do
-    candidate_checkpoint="${POLICY_OUTPUT}/${candidate_step}"
+    candidate_checkpoint="${candidate_step}"
+    if [[ "${POLICY_NAME}" == "g05" ]]; then
+      candidate_step="$(basename "${candidate_checkpoint}" .pt)"
+      candidate_step="${candidate_step#step_}"
+    else
+      candidate_step="$(basename "${candidate_checkpoint}")"
+    fi
     candidate_eval="${EVAL_ROOT}/step_${candidate_step}"
     evaluate_policy_checkpoint "${candidate_checkpoint}" "${candidate_eval}" "step ${candidate_step}"
     SELECT_ARGS+=(--candidate "${candidate_step}::${candidate_checkpoint}::${candidate_eval}")

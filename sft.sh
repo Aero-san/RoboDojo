@@ -1,5 +1,5 @@
 XPolicyLab/policy/Pi_05/openpi/.venv/bin/python \
-scripts/posttrain/prepare_pi05_dataset.py \
+scripts/posttrain/prepare_policy_dataset.py \
 --dataset-root data/RoboDojo_lerobot_v21_video \
 --repo-id RoboDojo-fill_pen_holder-arx_x5-joint \
 --task fill_pen_holder \
