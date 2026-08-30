@@ -11,8 +11,9 @@ start_gpu_reservation() {
   local python_bin="$2"
   local label="$3"
   if [[ "${GPU_RESERVATION_ENABLED:-1}" == "0" ]]; then return; fi
-  if [[ -n "${GPU_RESERVATION_PID}" ]] && kill -0 "${GPU_RESERVATION_PID}" 2>/dev/null; then
-    if [[ "${GPU_RESERVATION_GPU_IDS}" == "${gpu_ids}" ]]; then
+  if [[ -n "${GPU_RESERVATION_PID}" ]]; then
+    if kill -0 "${GPU_RESERVATION_PID}" 2>/dev/null && \
+        [[ "${GPU_RESERVATION_GPU_IDS}" == "${gpu_ids}" ]]; then
       return
     fi
     stop_gpu_reservation
@@ -30,6 +31,7 @@ start_gpu_reservation() {
       --device-count "${#gpu_id_array[@]}" \
       --ready-file "${GPU_RESERVATION_READY_FILE}" \
       --leave-free-mib "${GPU_RESERVATION_FREE_MIB:-2048}" \
+      --max-hold-seconds "${GPU_RESERVATION_LOCAL_MAX_HOLD_SECONDS:-1800}" \
       --label "${label}" &
   GPU_RESERVATION_PID=$!
   GPU_RESERVATION_GPU_IDS="${gpu_ids}"

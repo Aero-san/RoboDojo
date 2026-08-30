@@ -200,6 +200,8 @@ def _validate(values: dict[str, Any]) -> None:
         "rollout.remote.host",
         "rollout.remote.repo_root",
         "rollout.remote.work_root",
+        "rollout.remote.policy_env",
+        "rollout.remote.eval_env",
     )
     if values["rollout.remote.enabled"]:
         missing = [name for name in remote_required if values[name] is None]

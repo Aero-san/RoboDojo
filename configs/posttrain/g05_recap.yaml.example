@@ -41,6 +41,7 @@ devices:
     enabled: true
     leave_free_mib: 2048
     idle_used_max_mib: 64
+    local_max_hold_seconds: 1800
     remote_max_hold_seconds: 1800
 
 rollout:
@@ -60,6 +61,8 @@ rollout:
     zstd: zstd
     conda: conda
     python: /absolute/path/to/robodojo-python
+    policy_env: /absolute/path/to/g05-runtime
+    eval_env: /absolute/path/to/robodojo-conda-env
     policy_gpu: 0
     environment_gpu: 1
     value_video_gpu: 0

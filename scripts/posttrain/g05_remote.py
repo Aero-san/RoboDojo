@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
 from functools import partial
 from pathlib import Path
-import shlex
 from typing import Callable
 
 try:
@@ -14,11 +15,49 @@ except ModuleNotFoundError:
     from . import remote_recap
 
 
+def _install_remote_trainer(args: argparse.Namespace) -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    files = (
+        (
+            repo_root / "scripts/posttrain/train_g05.py",
+            f"{args.remote_repo_root}/scripts/posttrain/train_g05.py",
+            f"{args.remote_repo_root}/scripts/posttrain/train_g05.py",
+        ),
+        (
+            repo_root / "scripts/posttrain/g05_finetune_entry.py",
+            f"{args.remote_repo_root}/scripts/posttrain/g05_finetune_entry.py",
+            f"{args.remote_repo_root}/scripts/posttrain/train_g05.py",
+        ),
+        (
+            repo_root / "configs/g05/data/robodojo_recap.yaml",
+            f"{args.remote_repo_root}/configs/g05/data/robodojo_recap.yaml",
+            f"{args.remote_repo_root}/configs/g05/data/robodojo_recap.yaml",
+        ),
+        (
+            repo_root / "configs/g05/task/robodojo_recap.yaml",
+            f"{args.remote_repo_root}/configs/g05/task/robodojo_recap.yaml",
+            f"{args.remote_repo_root}/configs/g05/task/robodojo_recap.yaml",
+        ),
+    )
+    for local_path, remote_path, reference_path in files:
+        temporary = f"{remote_path}.tmp-{os.getpid()}"
+        remote_recap._scp(args, str(local_path), f"{args.host}:{temporary}")
+        remote_recap._remote(
+            args, ["chown", "--reference", reference_path, temporary]
+        )
+        remote_recap._remote(
+            args, ["chmod", "--reference", reference_path, temporary]
+        )
+        remote_recap._remote(args, ["mv", temporary, remote_path])
+    print("[RECAP remote training] installed current G05 training support", flush=True)
+
+
 def _run(args: argparse.Namespace, run_stage: Callable[..., None]) -> None:
     dataset = Path(args.dataset).expanduser().resolve()
     bundle, checkpoint = remote_recap._g05_bundle(Path(args.init_policy))
     output = Path(args.output).expanduser().resolve()
     checkpoint_name = checkpoint.name
+    _install_remote_trainer(args)
     command = shlex.join(
         [
             args.remote_policy_python,

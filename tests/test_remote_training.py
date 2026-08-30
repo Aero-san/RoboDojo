@@ -9,13 +9,152 @@ from unittest import mock
 
 import yaml
 
-from scripts.posttrain import remote_recap, remote_training
+from scripts.posttrain import g05_remote, remote_recap, remote_training
 from scripts.posttrain.prepare_g05_inference_checkpoint import (
     prepare_g05_inference_checkpoint,
 )
 
 
 class RemoteTrainingHelpersTest(unittest.TestCase):
+    def test_wcm_remote_support_installer_targets_checkout_atomically(self):
+        args = SimpleNamespace(
+            host="XYZ6226",
+            remote_repo_root="/remote/RoboDojo",
+        )
+        with (
+            mock.patch.object(remote_recap, "_remote") as remote,
+            mock.patch.object(remote_recap, "_scp") as scp,
+        ):
+            remote_training._install_remote_wcm_support(args)
+
+        uploads = [call.args[1:] for call in scp.call_args_list]
+        self.assertEqual(
+            [Path(source).name for source, _ in uploads],
+            [
+                "run_wcm.sh",
+                "run_wcm.py",
+                "wcm_checkpoint.py",
+                "annotate_recap_advantages.py",
+                "render_rollout_value_videos.py",
+            ],
+        )
+        self.assertTrue(
+            all(
+                destination.startswith("XYZ6226:/remote/RoboDojo/scripts/posttrain/")
+                and ".tmp-" in destination
+                for _, destination in uploads
+            )
+        )
+        self.assertEqual(
+            [
+                command[-1]
+                for command in (call.args[1] for call in remote.call_args_list)
+                if command[0] == "mv"
+            ],
+            [
+                "/remote/RoboDojo/scripts/posttrain/run_wcm.sh",
+                "/remote/RoboDojo/scripts/posttrain/run_wcm.py",
+                "/remote/RoboDojo/scripts/posttrain/wcm_checkpoint.py",
+                "/remote/RoboDojo/scripts/posttrain/annotate_recap_advantages.py",
+                "/remote/RoboDojo/scripts/posttrain/render_rollout_value_videos.py",
+            ],
+        )
+
+    def test_g05_remote_trainer_installer_targets_checkout_atomically(self):
+        args = SimpleNamespace(
+            host="XYZ6226",
+            remote_repo_root="/remote/RoboDojo",
+        )
+        with (
+            mock.patch.object(remote_recap, "_remote") as remote,
+            mock.patch.object(remote_recap, "_scp") as scp,
+        ):
+            g05_remote._install_remote_trainer(args)
+
+        uploads = [call.args[1:] for call in scp.call_args_list]
+        self.assertEqual(
+            [Path(source).name for source, _ in uploads],
+            [
+                "train_g05.py",
+                "g05_finetune_entry.py",
+                "robodojo_recap.yaml",
+                "robodojo_recap.yaml",
+            ],
+        )
+        self.assertIn(
+            "XYZ6226:/remote/RoboDojo/scripts/posttrain/train_g05.py.tmp-",
+            uploads[0][1],
+        )
+        self.assertIn(
+            "XYZ6226:/remote/RoboDojo/scripts/posttrain/g05_finetune_entry.py.tmp-",
+            uploads[1][1],
+        )
+        self.assertIn(
+            "XYZ6226:/remote/RoboDojo/configs/g05/data/robodojo_recap.yaml.tmp-",
+            uploads[2][1],
+        )
+        self.assertIn(
+            "XYZ6226:/remote/RoboDojo/configs/g05/task/robodojo_recap.yaml.tmp-",
+            uploads[3][1],
+        )
+        commands = [call.args[1] for call in remote.call_args_list]
+        self.assertEqual(commands[0][:2], ["chown", "--reference"])
+        self.assertEqual(commands[1][:2], ["chmod", "--reference"])
+        self.assertEqual(
+            [command[-1] for command in commands if command[0] == "mv"],
+            [
+                "/remote/RoboDojo/scripts/posttrain/train_g05.py",
+                "/remote/RoboDojo/scripts/posttrain/g05_finetune_entry.py",
+                "/remote/RoboDojo/configs/g05/data/robodojo_recap.yaml",
+                "/remote/RoboDojo/configs/g05/task/robodojo_recap.yaml",
+            ],
+        )
+
+    def test_remote_preflight_checks_g05_policy_websocket_runtime(self):
+        args = SimpleNamespace(
+            host="XYZ4090",
+            remote_repo_root="/remote/RoboDojo",
+            remote_work_root="/remote/jobs",
+            remote_zstd_bin="/usr/bin/zstd",
+            remote_conda_bin="/remote/conda",
+            remote_python_bin="/remote/bootstrap/bin/python",
+            policy="g05",
+            policy_env="/remote/GalaxeaVLA/.venv",
+            eval_env="/remote/miniconda3/envs/RoboDojo",
+            gpu=[],
+            require_wcm=False,
+            gpu_reservation=False,
+        )
+        success = SimpleNamespace(returncode=0, stdout="--zstd\n", stderr="")
+        with (
+            mock.patch.object(remote_recap, "_validate"),
+            mock.patch.object(
+                remote_recap, "_remote_result", return_value=success
+            ) as remote_result,
+            mock.patch.object(remote_recap, "_install_worker"),
+        ):
+            remote_recap.preflight(args)
+
+        commands = [call.args[1] for call in remote_result.call_args_list]
+        codec_checks = [
+            command
+            for command in commands
+            if "XPolicyLab.client_server.ws.protocol.codec" in " ".join(command)
+        ]
+        self.assertEqual(len(codec_checks), 1)
+        self.assertIn(
+            "PYTHONPATH=/remote/RoboDojo:/remote/RoboDojo/XPolicyLab",
+            codec_checks[0],
+        )
+        self.assertIn("/remote/GalaxeaVLA/.venv", codec_checks[0])
+        eval_checks = [
+            command
+            for command in commands
+            if "--prefix" in command
+            and "/remote/miniconda3/envs/RoboDojo" in command
+        ]
+        self.assertEqual(len(eval_checks), 1)
+
     def test_g05_adapter_matches_policy_inferencer_constructor(self):
         adapter_path = Path("XPolicyLab/policy/G05/model.py")
         module = ast.parse(adapter_path.read_text(encoding="utf-8"))
@@ -58,15 +197,18 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                             "processors": {"robodojo": {"shape_meta": {"action": []}}},
                         },
                         "model": {
-                            "tokenizer": {
-                                "vq_config": {
-                                    "vqvae_type": "g05.tokenizer.models.actioncodec2_v2.wrapper.ActionCodecV2Wrapper",
-                                    "ckpt_dir": "${oc.env:G05_ACTION_TOKENIZER_PATH}",
-                                }
-                            },
+                            "tokenizer": "${tokenizer}",
                             "model_arch": {
-                                "hf_processor_path": "${oc.env:G05_HF_PROCESSOR_PATH}",
+                                "hf_processor_path": "/training-host/qwen-processor",
+                                "action_tokenizer": "${model.tokenizer._target_}",
                                 "AT_CONFIG": "${model.tokenizer.vq_config}",
+                            },
+                        },
+                        "tokenizer": {
+                            "_target_": "g05.tokenizer.interface.vq_base.VQActionTokenizer",
+                            "vq_config": {
+                                "vqvae_type": "g05.tokenizer.models.actioncodec2_v2.wrapper.ActionCodecV2Wrapper",
+                                "ckpt_dir": "${oc.env:G05_ACTION_TOKENIZER_PATH}",
                             },
                         },
                         "logger": {
@@ -93,6 +235,8 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                     "logger.dir",
                     "logger.project",
                     "logger.workspace",
+                    "portable:model.model_arch.hf_processor_path",
+                    "materialized:model.model_arch.action_tokenizer",
                     "materialized:model.model_arch.AT_CONFIG",
                 ],
             )
@@ -107,6 +251,10 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                 "${oc.env:G05_HF_PROCESSOR_PATH}",
             )
             self.assertEqual(result["logger"], {"type": "wandb", "mode": "disabled"})
+            self.assertEqual(
+                result["model"]["model_arch"]["action_tokenizer"],
+                "g05.tokenizer.interface.vq_base.VQActionTokenizer",
+            )
             self.assertEqual(
                 result["model"]["model_arch"]["AT_CONFIG"],
                 {

@@ -1,24 +1,31 @@
 from __future__ import annotations
 
 import argparse
+import ast
 from contextlib import redirect_stdout
 import io
 import json
 from pathlib import Path
+import sys
 import tempfile
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
+from unittest import mock
 
 import pyarrow as pa
 import pyarrow.parquet as parquet
 import torch
+import yaml
 
-from scripts.posttrain import train_g05
+from scripts.posttrain import g05_finetune_entry, train_g05
 from scripts.posttrain.build_wcm_training_subset import main as build_wcm_training_subset
 from scripts.posttrain.lerobot_io import LeRobotLayout
 from scripts.posttrain.recap_conditioning import strip_condition, training_prompt
 from scripts.posttrain.robodojo_dataset import RoboDojoDataset
-from scripts.posttrain.run_wcm import _adapt_initial_checkpoint_state_dict
+from scripts.posttrain.run_wcm import _install_resume_checkpoint_compatibility
+from scripts.posttrain.wcm_checkpoint import adapt_wcm_state_dict
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class LeRobotLayoutTest(unittest.TestCase):
@@ -115,6 +122,53 @@ class WcmTrainingSubsetTest(unittest.TestCase):
                 )
 
 class WcmCheckpointCompatibilityTest(unittest.TestCase):
+    def test_full_resume_loader_normalizes_before_strict_restore(self):
+        source_key = (
+            "vision_encoder.backbone.encoder.layer.0."
+            "attention.attention.query.weight"
+        )
+        target_key = "vision_encoder.backbone.layers.0.attention.q_proj.weight"
+        tensor = torch.zeros(2, 2)
+        loader_globals = {
+            "load_checkpoint_payload": lambda _path, _ctx: {
+                "model": {source_key: tensor}
+            }
+        }
+        exec(
+            "def load_training_checkpoint(path, model, optimizer, scheduler, ctx, "
+            "expected_config=None):\n"
+            "    payload = load_checkpoint_payload(path, ctx)\n"
+            "    model.load_state_dict(payload['model'], strict=True)\n"
+            "    return payload\n",
+            loader_globals,
+        )
+        original_payload_loader = loader_globals["load_checkpoint_payload"]
+        command = SimpleNamespace(
+            load_training_checkpoint=loader_globals["load_training_checkpoint"]
+        )
+
+        class Model:
+            def __init__(self):
+                self.loaded = None
+
+            def state_dict(self):
+                return {target_key: tensor}
+
+            def load_state_dict(self, state_dict, *, strict):
+                self.loaded = state_dict
+                self.strict = strict
+
+        model = Model()
+        _install_resume_checkpoint_compatibility(command)
+        command.load_training_checkpoint("last.pt", model, None, None, object())
+
+        self.assertEqual(set(model.loaded), {target_key})
+        self.assertTrue(model.strict)
+        self.assertIs(
+            loader_globals["load_checkpoint_payload"],
+            original_payload_loader,
+        )
+
     def test_transformers_vit_keys_are_normalized_in_both_directions(self):
         pairs = {
             "vision_encoder.backbone.layers.0.attention.q_proj.weight": (
@@ -137,23 +191,115 @@ class WcmCheckpointCompatibilityTest(unittest.TestCase):
         legacy = {key: torch.zeros(2, 2) for key in pairs.values()}
 
         self.assertEqual(
-            set(_adapt_initial_checkpoint_state_dict(modern, legacy)),
+            set(adapt_wcm_state_dict(modern, legacy)),
             set(legacy),
         )
         self.assertEqual(
-            set(_adapt_initial_checkpoint_state_dict(legacy, modern)),
+            set(adapt_wcm_state_dict(legacy, modern)),
             set(modern),
         )
 
     def test_real_architecture_mismatch_is_rejected(self):
         with self.assertRaisesRegex(RuntimeError, "shape_mismatches"):
-            _adapt_initial_checkpoint_state_dict(
+            adapt_wcm_state_dict(
                 {"value_head.weight": torch.zeros(2, 2)},
                 {"value_head.weight": torch.zeros(3, 2)},
             )
 
 
 class G05TrainerTest(unittest.TestCase):
+    def test_recap_task_checkpoints_all_large_model_components(self):
+        config = yaml.safe_load(
+            (ROOT / "configs/g05/task/robodojo_recap.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        model_arch = config["model"]["model_arch"]
+
+        self.assertTrue(model_arch["checkpoint_vision"])
+        self.assertTrue(model_arch["checkpoint_vlm"])
+        self.assertTrue(model_arch["checkpoint_action_expert"])
+
+    def test_data_config_only_passes_supported_mixture_constructor_keys(self):
+        config = yaml.safe_load(
+            (ROOT / "configs/g05/data/robodojo_recap.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        source = ast.parse(
+            (
+                ROOT
+                / "XPolicyLab/policy/G05/GalaxeaVLA/src/g05/data/mixture_lerobot_dataset.py"
+            ).read_text(encoding="utf-8")
+        )
+        dataset_class = next(
+            node
+            for node in source.body
+            if isinstance(node, ast.ClassDef)
+            and node.name == "MixtureLerobotDataset"
+        )
+        constructor = next(
+            node
+            for node in dataset_class.body
+            if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+        )
+        supported = {argument.arg for argument in constructor.args.args} - {"self"}
+        passed = set(config) - {"_target_", "processors"}
+
+        self.assertEqual(passed - supported, set())
+        self.assertEqual(
+            config["embodiment_datasets"]["robodojo"]["shape_meta"],
+            config["processors"]["robodojo"]["shape_meta"],
+        )
+        self.assertFalse(config["in_memory"])
+
+    def test_guarded_entrypoint_stops_after_first_sample_failure(self):
+        base_dataset = ModuleType("g05.data.base_lerobot_dataset")
+        base_dataset.MAX_GETITEM_ATTEMPT = 10_000
+        data_package = ModuleType("g05.data")
+        data_package.base_lerobot_dataset = base_dataset
+        g05_package = ModuleType("g05")
+        g05_package.data = data_package
+        runtime = {}
+
+        def capture_runtime(path, run_name):
+            runtime["path"] = path
+            runtime["run_name"] = run_name
+            runtime["sys_path_0"] = sys.path[0]
+            runtime["argv0"] = sys.argv[0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = Path(directory) / "finetune.py"
+            trainer.touch()
+            with (
+                mock.patch.dict(
+                    "sys.modules",
+                    {
+                        "g05": g05_package,
+                        "g05.data": data_package,
+                        "g05.data.base_lerobot_dataset": base_dataset,
+                    },
+                ),
+                mock.patch.dict(
+                    "os.environ",
+                    {
+                        "ROBODOJO_G05_FINETUNE_SCRIPT": str(trainer),
+                        "ROBODOJO_G05_MAX_GETITEM_ATTEMPTS": "1",
+                    },
+                ),
+                mock.patch.object(
+                    g05_finetune_entry.runpy,
+                    "run_path",
+                    side_effect=capture_runtime,
+                ) as run_path,
+            ):
+                g05_finetune_entry.main()
+
+        self.assertEqual(base_dataset.MAX_GETITEM_ATTEMPT, 1)
+        run_path.assert_called_once_with(str(trainer.resolve()), run_name="__main__")
+        self.assertEqual(runtime["sys_path_0"], str(trainer.parent.resolve()))
+        self.assertEqual(runtime["argv0"], str(trainer.resolve()))
+
     def test_dry_run_emits_learning_rate_decay_overrides(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -208,6 +354,11 @@ class G05TrainerTest(unittest.TestCase):
             self.assertIn("model.lr_scheduler_type=warmup_constant_cosine", command)
             self.assertIn("model.lr_min_ratio=0.1", command)
             self.assertIn("model.constant_end_ratio=0.5", command)
+            self.assertIn(
+                f"tokenizer.vq_config.ckpt_dir={tokenizer.resolve()}",
+                command,
+            )
+            self.assertIn("g05_finetune_entry.py", command)
 
 
 

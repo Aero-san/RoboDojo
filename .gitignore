@@ -12,6 +12,8 @@ eval_result/
 smoke_results/
 docker/smoke_logs/
 data/
+!configs/g05/data/
+!configs/g05/data/robodojo_recap.yaml
 
 # Local scratch
 Dev/

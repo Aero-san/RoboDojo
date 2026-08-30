@@ -9,6 +9,7 @@ uses the same code path without SSH; any other host is treated as an SSH alias.
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import shlex
 import shutil
@@ -25,6 +26,36 @@ except ModuleNotFoundError:  # Running as ``python -m scripts.posttrain.remote_t
 
 
 MARKER_PREFIX = "@"
+
+
+def _install_remote_wcm_support(args: argparse.Namespace) -> None:
+    """Atomically install the tracked WCM adapters used by remote stages."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    remote_posttrain = f"{args.remote_repo_root}/scripts/posttrain"
+    files = (
+        ("run_wcm.sh", "run_wcm.sh"),
+        ("run_wcm.py", "run_wcm.py"),
+        ("wcm_checkpoint.py", "run_wcm.py"),
+        ("annotate_recap_advantages.py", "annotate_recap_advantages.py"),
+        ("render_rollout_value_videos.py", "render_rollout_value_videos.py"),
+    )
+    for name, reference_name in files:
+        local_path = repo_root / "scripts/posttrain" / name
+        remote_path = f"{remote_posttrain}/{name}"
+        reference_path = f"{remote_posttrain}/{reference_name}"
+        temporary = f"{remote_path}.tmp-{os.getpid()}"
+        remote_recap._scp(args, str(local_path), f"{args.host}:{temporary}")
+        remote_recap._remote(
+            args,
+            ["chown", "--reference", reference_path, temporary],
+        )
+        remote_recap._remote(
+            args,
+            ["chmod", "--reference", reference_path, temporary],
+        )
+        remote_recap._remote(args, ["mv", temporary, remote_path])
+    print("[RECAP remote training] installed current WCM support", flush=True)
 
 
 def _backend(args: argparse.Namespace, action: str = "run") -> SimpleNamespace:
@@ -242,6 +273,7 @@ def _remote_python(args: argparse.Namespace, kind: str) -> str:
 
 
 def run_wcm(args: argparse.Namespace) -> None:
+    _install_remote_wcm_support(args)
     dataset = Path(args.dataset).expanduser().resolve()
     config = Path(args.config).expanduser().resolve()
     init_checkpoint = Path(args.init_checkpoint).expanduser().resolve() if args.init_checkpoint else None
@@ -290,6 +322,7 @@ def run_wcm(args: argparse.Namespace) -> None:
 
 
 def run_advantages(args: argparse.Namespace) -> None:
+    _install_remote_wcm_support(args)
     buffer = Path(args.buffer).expanduser().resolve()
     checkpoint = Path(args.wcm_checkpoint).expanduser().resolve()
     output = Path(args.output).expanduser().resolve()
@@ -395,6 +428,7 @@ def run_pi05(args: argparse.Namespace) -> None:
 
 
 def run_render(args: argparse.Namespace) -> None:
+    _install_remote_wcm_support(args)
     rollout_root = Path(args.rollout_root).expanduser().resolve()
     checkpoint = Path(args.wcm_checkpoint).expanduser().resolve()
     output = Path(args.output).expanduser().resolve()
@@ -444,6 +478,7 @@ def run_render(args: argparse.Namespace) -> None:
 def preflight(args: argparse.Namespace) -> None:
     backend = _backend(args, action="preflight")
     remote_recap.preflight(backend)
+    _install_remote_wcm_support(args)
     checks = (
         (
             f"{args.policy} Python",

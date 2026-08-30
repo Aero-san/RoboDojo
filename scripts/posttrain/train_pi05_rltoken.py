@@ -29,6 +29,7 @@ sys.path.insert(0, str(POSTTRAIN_DIR))
 
 from progress import BAR_FORMAT, progress_enabled  # noqa: E402
 from robodojo_dataset import load_robodojo_dataset  # noqa: E402
+from wcm_checkpoint import adapt_wcm_state_dict  # noqa: E402
 from world_critic.data import (  # noqa: E402
     WorldCriticCollator,
     build_datasets,
@@ -727,7 +728,10 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
     wcm_model = None
     if args.objective == "wcm_actor":
         wcm_model = WorldCriticModel(wcm_config.model).to(device).eval()
-        wcm_model.load_state_dict(wcm_payload["model"], strict=True)
+        wcm_model.load_state_dict(
+            adapt_wcm_state_dict(wcm_payload["model"], wcm_model.state_dict()),
+            strict=True,
+        )
         for parameter in wcm_model.parameters():
             parameter.requires_grad_(False)
 

@@ -50,6 +50,9 @@ FIELDS: dict[str, Field] = {
     "devices.reservation.idle_used_max_mib": Field(
         "GPU_RESERVATION_IDLE_USED_MAX_MIB", "int", 64, minimum=0
     ),
+    "devices.reservation.local_max_hold_seconds": Field(
+        "GPU_RESERVATION_LOCAL_MAX_HOLD_SECONDS", "int", 1800, minimum=60
+    ),
     "devices.reservation.remote_max_hold_seconds": Field(
         "GPU_RESERVATION_REMOTE_MAX_HOLD_SECONDS", "int", 1800, minimum=60
     ),
@@ -78,6 +81,8 @@ FIELDS: dict[str, Field] = {
     "rollout.remote.zstd": Field("RECAP_REMOTE_ZSTD_BIN", "str", "zstd"),
     "rollout.remote.conda": Field("RECAP_REMOTE_CONDA_BIN", "str", "conda"),
     "rollout.remote.python": Field("RECAP_REMOTE_PYTHON_BIN", "str", "python"),
+    "rollout.remote.policy_env": Field("RECAP_REMOTE_POLICY_ENV", "optional_str", None),
+    "rollout.remote.eval_env": Field("RECAP_REMOTE_EVAL_ENV", "optional_str", None),
     "rollout.remote.policy_gpu": Field("RECAP_REMOTE_POLICY_GPU", "int", 0, minimum=0),
     "rollout.remote.environment_gpu": Field("RECAP_REMOTE_ENV_GPU", "int", 0, minimum=0),
     "rollout.remote.value_video_gpu": Field("RECAP_REMOTE_VALUE_VIDEO_GPU", "int", 0, minimum=0),

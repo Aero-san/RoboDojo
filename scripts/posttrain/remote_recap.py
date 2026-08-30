@@ -357,6 +357,80 @@ def preflight(args: argparse.Namespace) -> None:
         "Set RECAP_REMOTE_PYTHON_BIN to a remote Python environment containing PyYAML.",
     )
 
+    eval_env = getattr(args, "eval_env", "")
+    if eval_env:
+        eval_selector = (
+            ["--prefix", eval_env]
+            if eval_env.startswith("/")
+            else ["--name", eval_env]
+        )
+        check(
+            f"remote simulator conda environment exists ({eval_env})",
+            [
+                args.remote_conda_bin,
+                "run",
+                *eval_selector,
+                "python",
+                "-c",
+                "import sys; print(sys.executable)",
+            ],
+            (
+                "Set rollout.remote.eval_env to a conda environment that exists on "
+                f"{args.host}; do not use a path from another host."
+            ),
+        )
+
+    if (
+        getattr(args, "policy", "pi05") == "g05"
+        and getattr(args, "policy_env", "")
+    ):
+        policy_env = args.policy_env.rstrip("/")
+        policy_python = f"{policy_env}/bin/python"
+        policy_python_script = (
+            'if test -x "$1/bin/python"; then python="$1/bin/python"; '
+            'elif test -x "$1"; then python="$1"; '
+            'else exit 127; fi; shift; exec "$python" "$@"'
+        )
+        policy_python_command = [
+            "sh",
+            "-c",
+            policy_python_script,
+            "sh",
+            policy_env,
+            "-c",
+            (
+                "import sys; print(sys.executable); "
+                "import XPolicyLab.client_server.ws.protocol.codec"
+            ),
+        ]
+        check(
+            f"G05 policy Python exists ({policy_env})",
+            [
+                "sh",
+                "-c",
+                'test -x "$1/bin/python" || test -x "$1"',
+                "sh",
+                policy_env,
+            ],
+            "Set environment.policy_env to the remote G05 venv or Python executable.",
+        )
+        check(
+            f"G05 policy Python imports the XPolicyLab WebSocket codec ({policy_env})",
+            [
+                "env",
+                (
+                    f"PYTHONPATH={args.remote_repo_root}:"
+                    f"{args.remote_repo_root}/XPolicyLab"
+                ),
+                *policy_python_command,
+            ],
+            (
+                "Install XPolicyLab runtime dependencies into the G05 environment, e.g. "
+                f"`uv pip install --python {policy_python} -e "
+                f"{args.remote_repo_root}/XPolicyLab`."
+            ),
+        )
+
     robodojo = f"{args.remote_repo_root}/scripts/robodojo.sh"
     check(
         f"RoboDojo launcher exists and is readable ({robodojo})",
@@ -567,6 +641,9 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="action", required=True)
     preflight_parser = subparsers.add_parser("preflight")
     common(preflight_parser)
+    preflight_parser.add_argument("--policy", choices=("pi05", "g05"), default="pi05")
+    preflight_parser.add_argument("--policy-env", default="")
+    preflight_parser.add_argument("--eval-env", required=True)
     preflight_parser.add_argument("--gpu", type=int, action="append", default=[])
     preflight_parser.add_argument("--require-wcm", action="store_true")
     preflight_parser.set_defaults(function=preflight)

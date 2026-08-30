@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from progress import progress_iter  # noqa: E402
 from robodojo_dataset import load_robodojo_dataset  # noqa: E402
+from wcm_checkpoint import adapt_wcm_state_dict  # noqa: E402
 from world_critic.data import LeRobotWorldCriticDataset, WorldCriticCollator, build_processor  # noqa: E402
 from world_critic.distributed import (  # noqa: E402
     DistributedContext,
@@ -47,7 +48,10 @@ def _load_model(path: Path, device: torch.device):
         raise ValueError("--wcm-checkpoint must be an official WCM deploy.pt, best.pt, or last.pt.")
     config = config_from_checkpoint_payload(payload)
     model = WorldCriticModel(config.model).to(device).eval()
-    model.load_state_dict(payload["model"], strict=True)
+    model.load_state_dict(
+        adapt_wcm_state_dict(payload["model"], model.state_dict()),
+        strict=True,
+    )
     return config, model
 
 

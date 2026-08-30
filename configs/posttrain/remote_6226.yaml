@@ -38,6 +38,7 @@ devices:
     enabled: true
     leave_free_mib: 2048
     idle_used_max_mib: 1024
+    local_max_hold_seconds: 1800
     remote_max_hold_seconds: 1800
 
 rollout:
@@ -55,6 +56,8 @@ rollout:
     zstd: /usr/bin/zstd
     conda: /share/mingyang/miniconda3/bin/conda
     python: /share/mingyang/miniconda3/envs/RoboDojo/bin/python
+    policy_env: openpi
+    eval_env: /share/mingyang/miniconda3/envs/RoboDojo
     policy_gpu: 6
     environment_gpu: 7
     value_video_gpu: 6

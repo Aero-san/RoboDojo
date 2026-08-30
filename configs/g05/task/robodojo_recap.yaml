@@ -24,6 +24,8 @@ model:
   model_arch:
     action_dim: 20
     proprio_dim: 20
+    checkpoint_vlm: true
+    checkpoint_action_expert: true
     discrete_action: false
     continuous_action: true
     return_continuous_action: true
@@ -55,4 +57,3 @@ model:
 logger:
   type: wandb
   mode: online
-

@@ -38,14 +38,15 @@ devices:
     enabled: true
     leave_free_mib: 2048
     idle_used_max_mib: 1024
+    local_max_hold_seconds: 1800
     remote_max_hold_seconds: 1800
 
 rollout:
-  episodes: 30
+  episodes: 50
   layout_seed: 0
   minimum:
-    total: 20
-    successes: 3
+    total: 30
+    successes: 1
     failures: 3
   remote:
     enabled: true
@@ -55,6 +56,8 @@ rollout:
     zstd: /usr/bin/zstd
     conda: /share/mingyang/miniconda3/bin/conda
     python: /share/mingyang/miniconda3/envs/RoboDojo/bin/python
+    policy_env: /share/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv
+    eval_env: /share/mingyang/miniconda3/envs/RoboDojo
     policy_gpu: 0
     environment_gpu: 1
     value_video_gpu: 0
@@ -114,20 +117,22 @@ g05:
   processor_path: checkpoints/qwen3_5_2b_base_processor
   action_tokenizer: null
   action_source: fm
-  steps: 5000
-  batch_size: 128
+  steps: 3000
+  # Per-device micro-batch; FM expands the action-expert batch by 8x.
+  batch_size: 16
   num_workers: 8
+  # Preserve the previous effective batch: 8 x 4 GPUs x 16 = 512.
   grad_accumulation_steps: 1
   wandb_enabled: false
   optimizer:
     learning_rate: 1.0e-5
-    warmup_steps: 500
-    decay_learning_rate: 1.0e-8
-    decay_start_ratio: 0.2
+    warmup_steps: 300
+    decay_learning_rate: 1.0e-7
+    decay_start_ratio: 0.1
     weight_decay: 0.0001
 
 evaluation:
-  interval: 2000
+  interval: 1500
   episodes: 20
   reuse_rollout: true
   layout_seed: 1

@@ -38,6 +38,7 @@ devices:
     enabled: true
     leave_free_mib: 2048
     idle_used_max_mib: 1024
+    local_max_hold_seconds: 1800
     remote_max_hold_seconds: 1800
 
 rollout:
@@ -55,6 +56,8 @@ rollout:
     zstd: /usr/bin/zstd
     conda: /share/mingyang/miniconda3/bin/conda
     python: /share/mingyang/miniconda3/envs/RoboDojo/bin/python
+    policy_env: /share/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv
+    eval_env: /share/mingyang/miniconda3/envs/RoboDojo
     policy_gpu: 0
     environment_gpu: 1
     value_video_gpu: 0
@@ -115,9 +118,12 @@ g05:
   action_tokenizer: null
   action_source: fm
   steps: 5000
-  batch_size: 128
+  # Per-device micro-batch. FM uses 8 flow samples per item, so large values
+  # multiply activation memory before DDP can reduce anything.
+  batch_size: 8
   num_workers: 8
-  grad_accumulation_steps: 1
+  # 8 samples x 4 GPUs x 16 accumulation steps = effective batch 512.
+  grad_accumulation_steps: 16
   wandb_enabled: true
   optimizer:
     learning_rate: 1.0e-5

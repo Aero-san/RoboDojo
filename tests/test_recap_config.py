@@ -125,6 +125,20 @@ class RecapConfigTest(unittest.TestCase):
             environment["RECAP_REMOTE_G05_PROCESSOR_PATH"],
             "/absolute/path/to/GalaxeaVLA/checkpoints/qwen3_5_2b_base_processor",
         )
+        self.assertEqual(
+            environment["RECAP_REMOTE_POLICY_ENV"],
+            "/absolute/path/to/g05-runtime",
+        )
+        self.assertEqual(
+            environment["RECAP_REMOTE_EVAL_ENV"],
+            "/absolute/path/to/robodojo-conda-env",
+        )
+
+    def test_remote_rollout_requires_host_specific_runtime_environments(self):
+        payload = yaml.safe_load(G05_EXAMPLE.read_text(encoding="utf-8"))
+        payload["rollout"]["remote"]["eval_env"] = None
+        with self.assertRaisesRegex(ValueError, "rollout.remote.eval_env"):
+            self._resolve_payload(payload)
 
     def test_remote_g05_requires_processor_path(self):
         payload = yaml.safe_load(G05_EXAMPLE.read_text(encoding="utf-8"))

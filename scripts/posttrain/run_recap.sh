@@ -158,6 +158,8 @@ REMOTE_WORK_ROOT="${RECAP_REMOTE_WORK_ROOT:-}"
 REMOTE_ZSTD_BIN="${RECAP_REMOTE_ZSTD_BIN:-zstd}"
 REMOTE_CONDA_BIN="${RECAP_REMOTE_CONDA_BIN:-conda}"
 REMOTE_PYTHON_BIN="${RECAP_REMOTE_PYTHON_BIN:-python}"
+REMOTE_POLICY_ENV="${RECAP_REMOTE_POLICY_ENV:-}"
+REMOTE_EVAL_ENV="${RECAP_REMOTE_EVAL_ENV:-}"
 REMOTE_POLICY_GPU="${RECAP_REMOTE_POLICY_GPU:-0}"
 REMOTE_ENV_GPU="${RECAP_REMOTE_ENV_GPU:-0}"
 REMOTE_VALUE_VIDEO_GPU="${RECAP_REMOTE_VALUE_VIDEO_GPU:-${REMOTE_ENV_GPU}}"
@@ -467,6 +469,8 @@ if (( REMOTE_ENABLED )); then
     --remote-zstd-bin "${REMOTE_ZSTD_BIN}"
     --remote-conda-bin "${REMOTE_CONDA_BIN}"
     --remote-python-bin "${REMOTE_PYTHON_BIN}"
+    --policy "${POLICY_NAME}" --policy-env "${REMOTE_POLICY_ENV}"
+    --eval-env "${REMOTE_EVAL_ENV}"
     --gpu "${REMOTE_POLICY_GPU}" --gpu "${REMOTE_ENV_GPU}"
     --gpu "${REMOTE_VALUE_VIDEO_GPU}"
   )
@@ -566,7 +570,7 @@ run_policy_evaluation() {
       --layout-offset "${layout_offset}" \
       --policy-gpu "${REMOTE_POLICY_GPU}" --env-gpu "${REMOTE_ENV_GPU}" \
       --env-cfg "${ENV_CFG_TYPE}" --action-type "${ACTION_TYPE}" \
-      --policy-env "${POLICY_ENV}" --eval-env "${EVAL_ENV}" || remote_status=$?
+      --policy-env "${REMOTE_POLICY_ENV}" --eval-env "${REMOTE_EVAL_ENV}" || remote_status=$?
     if (( remote_status != 0 )); then
       cancel_active_remote_job
       return "${remote_status}"
@@ -832,7 +836,9 @@ RUN_CONFIG_FP=$(stage_fingerprint run \
   "eval_interval=${POLICY_EVAL_INTERVAL}" "eval_episodes=${POLICY_EVAL_EPISODES}" \
   "eval_seed=${POLICY_EVAL_LAYOUT_SEED}" "eval_offset=${POLICY_EVAL_LAYOUT_OFFSET}" \
   "env_cfg=${ENV_CFG_TYPE}" "action_type=${ACTION_TYPE}" \
-  "policy_env=${POLICY_ENV}" "eval_env=${EVAL_ENV}" "seed=${SEED}")
+  "policy_env=${POLICY_ENV}" "eval_env=${EVAL_ENV}" \
+  "remote_policy_env=${REMOTE_POLICY_ENV}" "remote_eval_env=${REMOTE_EVAL_ENV}" \
+  "seed=${SEED}")
 
 CONFIGURED_G05_ACTION_TOKENIZER="${G05_ACTION_TOKENIZER_PATH:-}"
 FIXED_NORM_STATS="${RUN_ROOT}/fixed_norm_stats"
@@ -1097,7 +1103,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
           --layout-seed "${ROLLOUT_LAYOUT_SEED}" \
           --policy-gpu "${REMOTE_POLICY_GPU}" --env-gpu "${REMOTE_ENV_GPU}" \
           --env-cfg "${ENV_CFG_TYPE}" --action-type "${ACTION_TYPE}" \
-          --policy-env "${POLICY_ENV}" --eval-env "${EVAL_ENV}"
+          --policy-env "${REMOTE_POLICY_ENV}" --eval-env "${REMOTE_EVAL_ENV}"
       ) >"${ROLLOUT_LOG}" 2>&1 &
       ACTIVE_ROLLOUT_PID=$!
       ROLLOUT_PENDING=1

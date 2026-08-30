@@ -26,6 +26,7 @@ from episode_value_video.render import RenderOptions, render_episodes  # noqa: E
 from episode_value_video.sources import VideoMapRepository  # noqa: E402
 from episode_value_video.video_io import iter_video_frames  # noqa: E402
 from progress import progress_iter  # noqa: E402
+from wcm_checkpoint import adapt_wcm_state_dict  # noqa: E402
 from world_critic.data import WorldCriticCollator, build_processor  # noqa: E402
 from world_critic.model import WorldCriticModel  # noqa: E402
 from world_critic.training import config_from_checkpoint_payload  # noqa: E402
@@ -47,7 +48,10 @@ def _load_model(path: Path, device: torch.device) -> tuple[Any, WorldCriticModel
         raise ValueError("--wcm-checkpoint must be an official WCM deploy.pt, best.pt, or last.pt.")
     config = config_from_checkpoint_payload(payload)
     model = WorldCriticModel(config.model).to(device).eval()
-    model.load_state_dict(payload["model"], strict=True)
+    model.load_state_dict(
+        adapt_wcm_state_dict(payload["model"], model.state_dict()),
+        strict=True,
+    )
     for parameter in model.parameters():
         parameter.requires_grad_(False)
     return config, model

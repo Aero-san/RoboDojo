@@ -12,6 +12,7 @@ import yaml
 
 _TRAINING_ONLY_LOGGER_KEYS = ("dir", "project", "workspace")
 _TRAINING_ONLY_DATA_KEYS = frozenset({"dataset_dirs", "dataset_groups"})
+_REMOTE_HF_PROCESSOR_PATH = "${oc.env:G05_HF_PROCESSOR_PATH}"
 
 
 def _strip_training_data_locations(
@@ -63,6 +64,13 @@ def _materialize_action_tokenizer_config(
     vq_config = tokenizer.get("vq_config")
     if not isinstance(vq_config, dict) or not vq_config.get("vqvae_type"):
         raise ValueError("G05 checkpoint tokenizer.vq_config has no vqvae_type.")
+    tokenizer_target = tokenizer.get("_target_")
+    if not isinstance(tokenizer_target, str) or not tokenizer_target:
+        raise ValueError("G05 checkpoint tokenizer has no _target_.")
+
+    if model_arch.get("action_tokenizer") != tokenizer_target:
+        model_arch["action_tokenizer"] = tokenizer_target
+        changes.append("materialized:model.model_arch.action_tokenizer")
 
     current = model_arch.get("AT_CONFIG")
     if isinstance(current, dict) and current.get("vqvae_type"):
@@ -72,6 +80,24 @@ def _materialize_action_tokenizer_config(
         materialized.update(current)
     model_arch["AT_CONFIG"] = materialized
     changes.append("materialized:model.model_arch.AT_CONFIG")
+
+
+def _make_hf_processor_path_portable(
+    payload: dict[str, Any],
+    *,
+    changes: list[str],
+) -> None:
+    """Replace the training-host processor path with the worker-provided path."""
+
+    model = payload.get("model")
+    if not isinstance(model, dict):
+        raise TypeError("G05 checkpoint config has no model mapping.")
+    model_arch = model.get("model_arch")
+    if not isinstance(model_arch, dict):
+        raise TypeError("G05 checkpoint config has no model.model_arch mapping.")
+    if model_arch.get("hf_processor_path") != _REMOTE_HF_PROCESSOR_PATH:
+        model_arch["hf_processor_path"] = _REMOTE_HF_PROCESSOR_PATH
+        changes.append("portable:model.model_arch.hf_processor_path")
 
 
 def prepare_g05_inference_checkpoint(checkpoint_root: str | Path) -> list[str]:
@@ -98,6 +124,7 @@ def prepare_g05_inference_checkpoint(checkpoint_root: str | Path) -> list[str]:
                 changes.append(f"logger.{key}")
                 del logger[key]
 
+    _make_hf_processor_path_portable(payload, changes=changes)
     _materialize_action_tokenizer_config(payload, changes=changes)
 
     if changes:

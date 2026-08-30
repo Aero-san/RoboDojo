@@ -80,6 +80,11 @@ def main(args: argparse.Namespace) -> None:
     trainer = root / "scripts/finetune.py"
     if not trainer.is_file():
         raise FileNotFoundError(f"Upstream G05 trainer is missing: {trainer}")
+    guarded_entrypoint = Path(__file__).with_name("g05_finetune_entry.py").resolve()
+    if not guarded_entrypoint.is_file():
+        raise FileNotFoundError(
+            f"RoboDojo G05 finetune entrypoint is missing: {guarded_entrypoint}"
+        )
     dataset = Path(args.dataset).expanduser().resolve()
     if json.loads((dataset / "meta/info.json").read_text())["codebase_version"] != "v3.0":
         raise ValueError("G05 training accepts only a LeRobot v3.0 dataset.")
@@ -103,7 +108,7 @@ def main(args: argparse.Namespace) -> None:
         "1",
         "--nproc-per-node",
         str(args.gpus),
-        str(trainer),
+        str(guarded_entrypoint),
         "--config-dir",
         str(config_dir),
         f"task={args.task_config}",
@@ -121,6 +126,7 @@ def main(args: argparse.Namespace) -> None:
         f"model.constant_end_ratio={args.decay_start_ratio}",
         f"model.weight_decay={args.weight_decay}",
         f"model.model_arch.hf_processor_path={processor}",
+        f"tokenizer.vq_config.ckpt_dir={tokenizer}",
         f"checkpointing_steps={args.save_interval}",
         f"logger.mode={'online' if args.wandb else 'disabled'}",
     ]
@@ -134,12 +140,14 @@ def main(args: argparse.Namespace) -> None:
         {
             "ROBODOJO_RECAP_DATASET": str(dataset),
             "ROBODOJO_G05_DATA_STATS": str(stats),
-            "G05_ACTION_TOKENIZER_PATH": str(tokenizer),
+            "ROBODOJO_G05_FINETUNE_SCRIPT": str(trainer),
+            "ROBODOJO_G05_MAX_GETITEM_ATTEMPTS": "1",
             "PYTHONPATH": os.pathsep.join(
                 [str(root / "src"), str(root), environment.get("PYTHONPATH", "")]
             ),
         }
     )
+    environment.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     print("[G05 RECAP] " + shlex.join(command), flush=True)
     if args.dry_run:
         return
