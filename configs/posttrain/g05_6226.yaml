@@ -18,7 +18,7 @@ environment:
   eval_env: /mnt/data-cpfs/mingyang/miniconda3/envs/RoboDojo
 
 checkpoints:
-  initial_policy: XPolicyLab/policy/G05/checkpoints/hf_g05_robodojo_fm_only_checkpoint
+  initial_policy: XPolicyLab/policy/G05/ckpt/hf_g05_robodojo_fm_only_checkpoint
   initial_wcm: outputs/wcm/robodojo_pi05/deploy.pt
 
 data:
@@ -58,9 +58,9 @@ rollout:
     python: /share/mingyang/miniconda3/envs/RoboDojo/bin/python
     policy_env: /share/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv
     eval_env: /share/mingyang/miniconda3/envs/RoboDojo
-    policy_gpu: 0
-    environment_gpu: 1
-    value_video_gpu: 0
+    policy_gpu: 2
+    environment_gpu: 3
+    value_video_gpu: 2
     policy_evaluation: true
     g05_root: /share/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA
     g05_processor_path: /share/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/checkpoints/qwen3_5_2b_base_processor

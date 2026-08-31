@@ -165,10 +165,16 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
     loader = DataLoader(
         windows,
         batch_size=args.batch_size,
-        sampler=DistributedEvalSampler(windows, ctx.rank, ctx.world_size) if ctx.distributed else None,
+        sampler=DistributedEvalSampler(windows, ctx.rank, ctx.world_size)
+        if ctx.distributed
+        else None,
         shuffle=False,
         num_workers=args.num_workers,
-        persistent_workers=args.num_workers > 0,
+        # This loader is consumed exactly once. Persistent workers can keep
+        # torchrun alive after rank zero reaches 100%, especially when video
+        # decoder workers were forked after CUDA initialization.
+        persistent_workers=False,
+        multiprocessing_context="spawn" if args.num_workers > 0 else None,
         collate_fn=collator,
     )
 
@@ -207,7 +213,21 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
                         value_sum[key] += float(values[row, column])
                         value_count[key] += 1
 
+    # Exhausting a non-persistent loader shuts down every decoder worker
+    # before ranks enter the collective. This prevents a completed rank-zero
+    # progress bar from masking ranks stuck in worker teardown.
+    del loader
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    print(
+        f"[RECAP value inference][rank={ctx.rank}] batches complete; gathering shards",
+        flush=True,
+    )
     gathered_shards = gather_objects((value_sum, value_count, value_priority), ctx)
+    print(
+        f"[RECAP value inference][rank={ctx.rank}] shard gather complete",
+        flush=True,
+    )
     if not ctx.is_main:
         return
     assert gathered_shards is not None
@@ -296,11 +316,17 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
         "return_raw_min": dataset._return_raw_min,
         "return_raw_max": dataset._return_raw_max,
         "wcm_checkpoint": str(Path(args.wcm_checkpoint).expanduser().resolve()),
+        "episode_count": len(records),
+        "frame_count": frame_count,
     }
-    output.write_text(
-        json.dumps(header) + "\n" + "".join(json.dumps(record) + "\n" for record in records),
+    temporary = output.with_suffix(output.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(header)
+        + "\n"
+        + "".join(json.dumps(record) + "\n" for record in records),
         encoding="utf-8",
     )
+    temporary.replace(output)
     print(
         f"saved RECAP labels: {output} episodes={len(records)} frames={frame_count} "
         f"positive={positive_count} ({positive_count / max(frame_count, 1):.1%}) "

@@ -1249,7 +1249,8 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
     --device "${RECAP_WCM_DEVICE:-cuda}"
     --expected-world-size "${WCM_GPU_COUNT}"
   )
-  if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && artifact_complete advantages "${ADVANTAGES}"; then
+  if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && \
+     artifact_complete advantages "${ADVANTAGES}" "${BUFFER_EPISODES}"; then
     reuse_stage advantages
   else
     archive_incomplete "${ADVANTAGES}"
@@ -1512,6 +1513,11 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       REBUILD_DOWNSTREAM=1
     fi
   fi
+  "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/recap_artifacts.py" finalize-iteration \
+    --run-root "${RUN_ROOT}" --iteration-root "${ITER_DIR}"
+  CURRENT_POLICY=$("${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/recap_artifacts.py" \
+    selected-checkpoint --iteration-root "${ITER_DIR}")
+  printf '%s\n' "${CURRENT_POLICY}" > "${RUN_ROOT}/latest_policy.txt"
   "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/write_recap_report.py" --run-root "${RUN_ROOT}"
 done
 

@@ -327,9 +327,20 @@ def run_advantages(args: argparse.Namespace) -> None:
     checkpoint = Path(args.wcm_checkpoint).expanduser().resolve()
     output = Path(args.output).expanduser().resolve()
     remote_python = _remote_python(args, "wcm")
+    gpu_count = len(args.gpus.split(","))
+    launcher = [remote_python]
+    if gpu_count > 1:
+        launcher.extend(
+            [
+                "-m",
+                "torch.distributed.run",
+                "--standalone",
+                f"--nproc_per_node={gpu_count}",
+            ]
+        )
     command = shlex.join(
         [
-            remote_python,
+            *launcher,
             f"{args.remote_repo_root}/scripts/posttrain/annotate_recap_advantages.py",
             "--wcm-checkpoint",
             "@input/wcm_checkpoint",
@@ -354,7 +365,7 @@ def run_advantages(args: argparse.Namespace) -> None:
             "--device",
             args.device,
             "--expected-world-size",
-            str(len(args.gpus.split(","))),
+            str(gpu_count),
         ]
     )
     _run_stage(

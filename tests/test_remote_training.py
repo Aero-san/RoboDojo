@@ -60,6 +60,59 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
             ],
         )
 
+    def test_advantage_inference_uses_nonpersistent_spawn_workers(self):
+        module = ast.parse(
+            Path("scripts/posttrain/annotate_recap_advantages.py").read_text(
+                encoding="utf-8"
+            )
+        )
+        loaders = [
+            node
+            for node in ast.walk(module)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "DataLoader"
+        ]
+
+        self.assertEqual(len(loaders), 1)
+        keywords = {keyword.arg: keyword.value for keyword in loaders[0].keywords}
+        self.assertIs(ast.literal_eval(keywords["persistent_workers"]), False)
+        context = keywords["multiprocessing_context"]
+        self.assertIsInstance(context, ast.IfExp)
+        self.assertEqual(ast.literal_eval(context.body), "spawn")
+
+    def test_remote_multigpu_advantages_use_torchrun(self):
+        args = SimpleNamespace(
+            buffer="/local/buffer",
+            wcm_checkpoint="/local/deploy.pt",
+            output="/local/advantages.jsonl",
+            task="general_pickup",
+            gpus="0,1,2,3",
+            lookahead="10",
+            gamma="1.0",
+            failure_penalty="300",
+            positive_fraction="0.3",
+            batch_size="96",
+            num_workers="8",
+            device="cuda",
+            remote_wcm_python="/remote/wcm/python",
+            remote_repo_root="/remote/RoboDojo",
+            job_id="general-pickup-iter-03-advantages",
+        )
+        with (
+            mock.patch.object(remote_training, "_install_remote_wcm_support"),
+            mock.patch.object(remote_training, "_run_stage") as run_stage,
+        ):
+            remote_training.run_advantages(args)
+
+        command = run_stage.call_args.kwargs["command"]
+        self.assertIn(
+            "/remote/wcm/python -m torch.distributed.run --standalone "
+            "--nproc_per_node=4",
+            command,
+        )
+        self.assertIn("--expected-world-size 4", command)
+
     def test_g05_remote_trainer_installer_targets_checkout_atomically(self):
         args = SimpleNamespace(
             host="XYZ6226",
