@@ -60,6 +60,70 @@ def frame_groups_from_manifest(dataset_root: str | os.PathLike[str]) -> dict[str
     }
 
 
+def _training_frame_range(dataset: Any) -> tuple[int, int]:
+    """Return the raw frame interval represented by one G05 RECAP dataset.
+
+    G05 applies its train/validation split inside ``BaseLerobotDataset`` after
+    loading the complete LeRobot directory. RECAP uses exactly one dataset
+    group, so its logical indices correspond to one contiguous raw interval.
+    """
+    inner_datasets = getattr(dataset, "datasets", None)
+    if not isinstance(inner_datasets, (list, tuple)) or len(inner_datasets) != 1:
+        raise ValueError(
+            "G05 RECAP source balancing requires exactly one dataset group."
+        )
+    inner = inner_datasets[0]
+    if not hasattr(inner, "_start_idx") or not hasattr(inner, "_end_idx"):
+        raise TypeError(
+            "G05 RECAP dataset does not expose its train/validation frame range."
+        )
+    start = int(inner._start_idx)
+    end = int(inner._end_idx)
+    if start < 0 or end <= start:
+        raise ValueError(f"Invalid G05 dataset frame range: [{start}, {end})")
+    if end - start != len(dataset):
+        raise ValueError(
+            "G05 RECAP source balancing requires an unweighted contiguous dataset "
+            f"range: range={end - start}, dataset={len(dataset)}"
+        )
+    return start, end
+
+
+def _groups_for_frame_range(
+    groups: dict[str, np.ndarray], start: int, end: int
+) -> tuple[dict[str, np.ndarray], int]:
+    """Restrict manifest indices to a contiguous dataset range and rebase them."""
+    all_indices = np.concatenate(
+        [np.asarray(groups[name], dtype=np.int64) for name in SOURCE_KINDS]
+    )
+    if len(all_indices) == 0:
+        raise ValueError("RECAP sampling manifest contains no source frames.")
+    ordered = np.sort(all_indices)
+    manifest_frames = int(ordered[-1]) + 1
+    if not np.array_equal(ordered, np.arange(manifest_frames, dtype=np.int64)):
+        raise ValueError(
+            "RECAP sampling manifest source kinds do not partition all frames."
+        )
+    if start < 0 or end <= start or end > manifest_frames:
+        raise ValueError(
+            f"G05 dataset frame range [{start}, {end}) is outside the "
+            f"RECAP manifest with {manifest_frames} frames."
+        )
+
+    selected = {
+        name: indices[(indices >= start) & (indices < end)] - start
+        for name, indices in groups.items()
+    }
+    selected_indices = np.sort(np.concatenate(list(selected.values())))
+    if not np.array_equal(
+        selected_indices, np.arange(end - start, dtype=np.int64)
+    ):
+        raise ValueError(
+            "RECAP sampling manifest does not cover the complete G05 dataset split."
+        )
+    return selected, manifest_frames
+
+
 def _allocations(
     groups: dict[str, np.ndarray],
     demo_weight: float,
@@ -145,16 +209,27 @@ class SourceBalancedDataset:
         demo_weight: float,
         rollout_weight: float,
         seed: int,
+        frame_range: tuple[int, int] | None = None,
     ) -> None:
+        if frame_range is None:
+            frame_range = (0, sum(len(group) for group in groups.values()))
+        groups, manifest_frames = _groups_for_frame_range(groups, *frame_range)
         indices, report = build_virtual_indices(
             groups, demo_weight, rollout_weight, seed
         )
-        if len(dataset) != sum(len(group) for group in groups.values()):
+        selected_frames = sum(len(group) for group in groups.values())
+        if len(dataset) != selected_frames:
             raise ValueError(
-                "RECAP sampling manifest frame count does not match G05 dataset: "
-                f"manifest={sum(len(group) for group in groups.values())}, "
-                f"dataset={len(dataset)}"
+                "RECAP sampling manifest split does not match G05 dataset: "
+                f"manifest_split={selected_frames}, dataset={len(dataset)}"
             )
+        report.update(
+            {
+                "manifest_frames": manifest_frames,
+                "dataset_frame_range": list(frame_range),
+                "excluded_frames": manifest_frames - selected_frames,
+            }
+        )
         self._dataset = dataset
         self._indices = indices
         self.report = report
@@ -182,16 +257,26 @@ def install_source_balancing(
 
     groups = frame_groups_from_manifest(dataset_root)
     original = processor_utils.instantiate_dataset
+    sampling_report = report_from_manifest(
+        dataset_root, demo_weight, rollout_weight, seed
+    )
 
     def instantiate_balanced(cfg, **kwargs):
         dataset = original(cfg, **kwargs)
         if kwargs.get("is_training_set") is not True:
             return dataset
         balanced = SourceBalancedDataset(
-            dataset, groups, demo_weight, rollout_weight, seed
+            dataset,
+            groups,
+            demo_weight,
+            rollout_weight,
+            seed,
+            frame_range=_training_frame_range(dataset),
         )
+        sampling_report.clear()
+        sampling_report.update(balanced.report)
         LOGGER.info("RECAP source-balanced sampling: %s", balanced.report)
         return balanced
 
     processor_utils.instantiate_dataset = instantiate_balanced
-    return report_from_manifest(dataset_root, demo_weight, rollout_weight, seed)
+    return sampling_report

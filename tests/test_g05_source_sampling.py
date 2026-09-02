@@ -48,6 +48,34 @@ class G05SourceSamplingTest(unittest.TestCase):
         self.assertEqual(dataset.marker, "inner")
         self.assertTrue(all(0 <= dataset[index] < 6 for index in range(len(dataset))))
 
+    def test_wrapper_aligns_manifest_groups_to_training_episode_prefix(self):
+        groups = {
+            "demo": np.arange(4, dtype=np.int64),
+            "rollout": np.arange(4, 10, dtype=np.int64),
+        }
+
+        class Dataset:
+            def __len__(self):
+                return 8
+
+            def __getitem__(self, index):
+                return index
+
+        dataset = SourceBalancedDataset(
+            Dataset(),
+            groups,
+            1.0,
+            1.0,
+            seed=0,
+            frame_range=(0, 8),
+        )
+
+        self.assertEqual(dataset.report["manifest_frames"], 10)
+        self.assertEqual(dataset.report["dataset_frame_range"], [0, 8])
+        self.assertEqual(dataset.report["excluded_frames"], 2)
+        self.assertEqual(dataset.report["source_frames"], {"demo": 4, "rollout": 4})
+        self.assertTrue(all(0 <= dataset[index] < 8 for index in range(len(dataset))))
+
     def test_report_reads_recap_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
