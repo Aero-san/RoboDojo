@@ -4,36 +4,38 @@ policy:
   name: g05
 
 run:
-  task: general_pickup
-  output_root: outputs/recap_g05_remote
+  task: align_blocks
+  output_root: outputs/recap_g05_hdf5_remote
   iterations: 10
-  resume: true
-  reuse_completed_artifacts: true
+  resume: false
+  reuse_completed_artifacts: false
   seed: 0
 
 environment:
   env_cfg: arx_x5
   action_type: joint
   policy_env: /share/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv
-  eval_env: /mnt/cpfs-E/mingyang/miniconda3/envs/RoboDojo
+  eval_env: /mnt/data-cpfs/mingyang/miniconda3/envs/RoboDojo
 
 checkpoints:
-  initial_policy: XPolicyLab/policy/G05/checkpoints/hf_g05_robodojo_fm_only_checkpoint
+  initial_policy: XPolicyLab/policy/G05/ckpt/hf_g05_robodojo_fm_only_checkpoint
   initial_wcm: outputs/wcm/robodojo_pi05/deploy.pt
 
 data:
-  format: v3.0
-  demo_root: data/pickup_video
-  max_demo_episodes: 44
+  # Exactly one source adapter is selected for the run. The task is discovered
+  # below data/RoboDojo/<run.task>/<environment.env_cfg>/data.
+  format: hdf5
+  demo_root: data/RoboDojo
+  max_demo_episodes: 0
   mode: video
   norm_asset_id: null
 
 devices:
-  policy_train: [0,1,2,3]
-  wcm_train: [0,1,2,3]
-  rollout_policy: 0
-  rollout_environment: 1
-  value_video: 0
+  policy_train: [4,5,6,7]
+  wcm_train: [4,5,6,7]
+  rollout_policy: 6
+  rollout_environment: 7
+  value_video: 6
   reservation:
     enabled: true
     leave_free_mib: 2048
@@ -42,12 +44,12 @@ devices:
     remote_max_hold_seconds: 1800
 
 rollout:
-  episodes: 30
-  max_steps: 40
+  episodes: 40
+  max_steps: 200
   layout_seed: 0
   minimum:
-    total: 20
-    successes: 3
+    total: 40
+    successes: 0
     failures: 3
   remote:
     enabled: true
@@ -74,10 +76,10 @@ training:
     host: XYZ6226
     repo_root: /mnt/data-cpfs/mingyang/RoboDojo
     work_root: /mnt/data-cpfs/mingyang/RoboDojo/recap_remote_jobs
-    zstd: /usr/local/bin/zstd
+    zstd: /usr/bin/zstd
     conda: /mnt/data-cpfs/mingyang/miniconda3/bin/conda
     python: /mnt/data-cpfs/mingyang/miniconda3/envs/RoboDojo/bin/python
-    policy_python: /mnt/data-cpfs/mingyang//RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv/bin/python
+    policy_python: /mnt/data-cpfs/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv/bin/python
     wcm_python: /mnt/data-cpfs/mingyang/RoboDojo/external_dependencies/WCM/.venv/bin/python
     policy_gpus: [0, 1,2,3]
     wcm_gpus: [0, 1,2,3]
@@ -87,8 +89,8 @@ training:
 wcm:
   train:
     config: configs/wcm/robodojo_pi05.yaml
-    epochs: 5
-    replay_episodes: 44
+    epochs: 3
+    replay_episodes: 200
     per_device_batch_size: 64
     num_workers: 8
     precision: fp32
@@ -112,30 +114,38 @@ recap:
     rollouts: 1.0
 
 g05:
-  # Upstream GalaxeaVLA checkout on the remote training host.
-  root: /mnt/cpfs-E/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA
+  # Upstream GalaxeaVLA checkout on the active training host.
+  root: /mnt/data-cpfs/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA
   task_config: robodojo_recap
   processor_path: checkpoints/qwen3_5_2b_base_processor
   action_tokenizer: null
   action_source: fm
   steps: 5000
-  # Per-device micro-batch. FM uses 8 flow samples per item, so large values
-  # multiply activation memory before DDP can reduce anything.
-  batch_size: 8
+  # Per-device micro-batch; FM expands the action-expert batch by 8x.
+  batch_size: 16
   num_workers: 8
-  # 8 samples x 4 GPUs x 16 accumulation steps = effective batch 512.
-  grad_accumulation_steps: 16
-  wandb_enabled: true
+  # Preserve the previous effective batch: 8 x 4 GPUs x 16 = 512.
+  grad_accumulation_steps: 1
+  # GalaxeaVLA currently uses DDP, not FSDP. These are its native
+  # per-rank memory controls; activation checkpointing trades compute for memory.
+  memory:
+    model_weights_to_bf16: true
+    use_8bit_optimizer: false
+    activation_checkpointing:
+      vision: false
+      vlm: false
+      action_expert: false
+  wandb_enabled: false
   optimizer:
     learning_rate: 1.0e-5
     warmup_steps: 500
-    decay_learning_rate: 1.0e-7
-    decay_start_ratio: 0.2
-    weight_decay: 0.0001
+    decay_learning_rate: 1.0e-6
+    decay_start_ratio: 0.1
+    weight_decay: 0.001
 
 evaluation:
-  interval: 2000
-  episodes: 30
+  interval: 2500
+  episodes: 40
   reuse_rollout: true
   layout_seed: 1
   layout_offset: 0
@@ -151,7 +161,7 @@ value_video:
   y_max: 1.0
 
 runtime:
-  policy_python: /mnt/cpfs-E/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv/bin/python
+  policy_python: /mnt/data-cpfs/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv/bin/python
   data_python: XPolicyLab/policy/Pi_05/openpi/.venv/bin/python
-  wcm_python: /mnt/cpfs-E/mingyang/miniconda3/envs/RoboDojo/bin/python
+  wcm_python: /mnt/data-cpfs/mingyang/miniconda3/envs/RoboDojo/bin/python
   policy_dir: null

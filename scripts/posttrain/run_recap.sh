@@ -19,7 +19,8 @@ Options:
   --resume                            Resume regardless of run.resume in YAML
   --help                              Show this message
 
-Examples: configs/posttrain/pi05_recap.yaml.example and g05_recap.yaml.example.
+Examples: configs/posttrain/pi05_recap.yaml.example, g05_recap.yaml.example,
+and g05_hdf5_remote.yaml.
 EOF
 }
 
@@ -88,7 +89,7 @@ trap interrupt_rollout INT TERM
 PI_DIR="${ROOT_DIR}/XPolicyLab/policy/Pi_05"
 G05_POLICY_DIR="${ROOT_DIR}/XPolicyLab/policy/G05"
 POLICY_NAME="${RECAP_POLICY_NAME:-pi05}"
-DEMO_FORMAT="${LEROBOT_DATA_FORMAT:-v2.1}"
+DEMO_FORMAT="${RECAP_DEMO_FORMAT:-v2.1}"
 G05_ROOT="${G05_ROOT:-}"
 case "${POLICY_NAME}" in
   pi05)
@@ -112,6 +113,7 @@ INITIAL_WCM_CHECKPOINT="${INITIAL_WCM_CHECKPOINT:-}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${ROOT_DIR}/outputs/recap}"
 ITERATIONS="${RECAP_ITERATIONS:-3}"
 ROLLOUT_EPISODES="${RECAP_ROLLOUT_EPISODES:-100}"
+ROLLOUT_MAX_STEPS="${RECAP_ROLLOUT_MAX_STEPS:-40}"
 MIN_ROLLOUT_EPISODES="${RECAP_MIN_ROLLOUT_EPISODES:-50}"
 MIN_SUCCESS_EPISODES="${RECAP_MIN_SUCCESS_EPISODES:-5}"
 MIN_FAILURE_EPISODES="${RECAP_MIN_FAILURE_EPISODES:-5}"
@@ -135,6 +137,32 @@ GUIDANCE_SCALE="${RECAP_GUIDANCE_SCALE:-1.0}"
 DEMO_SAMPLING_WEIGHT="${RECAP_DEMO_SAMPLING_WEIGHT:-1.0}"
 ROLLOUT_SAMPLING_WEIGHT="${RECAP_ROLLOUT_SAMPLING_WEIGHT:-1.0}"
 FAILURE_PENALTY="${WCM_FAILURE_PENALTY:-300}"
+G05_MEMORY_ARGS=()
+if [[ "${G05_MODEL_WEIGHTS_TO_BF16:-0}" == "1" ]]; then
+  G05_MEMORY_ARGS+=(--model-weights-to-bf16)
+else
+  G05_MEMORY_ARGS+=(--no-model-weights-to-bf16)
+fi
+if [[ "${G05_USE_8BIT_OPTIMIZER:-0}" == "1" ]]; then
+  G05_MEMORY_ARGS+=(--use-8bit-optimizer)
+else
+  G05_MEMORY_ARGS+=(--no-use-8bit-optimizer)
+fi
+if [[ "${G05_CHECKPOINT_VISION:-1}" == "1" ]]; then
+  G05_MEMORY_ARGS+=(--checkpoint-vision)
+else
+  G05_MEMORY_ARGS+=(--no-checkpoint-vision)
+fi
+if [[ "${G05_CHECKPOINT_VLM:-1}" == "1" ]]; then
+  G05_MEMORY_ARGS+=(--checkpoint-vlm)
+else
+  G05_MEMORY_ARGS+=(--no-checkpoint-vlm)
+fi
+if [[ "${G05_CHECKPOINT_ACTION_EXPERT:-1}" == "1" ]]; then
+  G05_MEMORY_ARGS+=(--checkpoint-action-expert)
+else
+  G05_MEMORY_ARGS+=(--no-checkpoint-action-expert)
+fi
 if [[ "${POLICY_NAME}" == "g05" ]]; then
   NUM_TRAIN_STEPS="${G05_NUM_TRAIN_STEPS:-3000}"
   POLICY_WARMUP_STEPS="${G05_WARMUP_STEPS:-500}"
@@ -200,7 +228,26 @@ if (( ! TRAINING_REMOTE_ENABLED )); then
 fi
 [[ -x "${WCM_PYTHON_BIN}" ]] || { echo "WCM Python not found: ${WCM_PYTHON_BIN}" >&2; exit 1; }
 [[ -f "${WCM_CONFIG}" ]] || { echo "WCM config not found: ${WCM_CONFIG}" >&2; exit 1; }
-[[ -f "${DEMO_ROOT}/meta/info.json" ]] || { echo "Demo dataset not found: ${DEMO_ROOT}" >&2; exit 1; }
+case "${DEMO_FORMAT}" in
+  v2.1|v3.0)
+    [[ -f "${DEMO_ROOT}/meta/info.json" ]] || {
+      echo "LeRobot ${DEMO_FORMAT} demo dataset not found: ${DEMO_ROOT}" >&2
+      exit 1
+    }
+    ;;
+  hdf5)
+    [[ -e "${DEMO_ROOT}" ]] || {
+      echo "RoboDojo HDF5 demo root does not exist: ${DEMO_ROOT}" >&2
+      exit 1
+    }
+    HDF5_DEMO_FILE=$(find "${DEMO_ROOT}" -type f \( -name 'episode_*.hdf5' -o -name 'episode_*.h5' \) -print -quit)
+    [[ -n "${HDF5_DEMO_FILE}" ]] || {
+      echo "RoboDojo HDF5 demo dataset not found below: ${DEMO_ROOT}" >&2
+      exit 1
+    }
+    ;;
+  *) echo "Unsupported demonstration format: ${DEMO_FORMAT}" >&2; exit 2 ;;
+esac
 if [[ "${POLICY_NAME}" == "g05" ]]; then
   [[ -n "${G05_ROOT}" ]] || { echo "G05_ROOT is required" >&2; exit 2; }
   export G05_ROOT
@@ -214,6 +261,7 @@ if [[ -n "${INITIAL_WCM_CHECKPOINT}" && ! -f "${INITIAL_WCM_CHECKPOINT}" ]]; the
 fi
 [[ "${ITERATIONS}" =~ ^[1-9][0-9]*$ ]] || { echo "--iterations must be positive" >&2; exit 2; }
 [[ "${ROLLOUT_EPISODES}" =~ ^[1-9][0-9]*$ ]] || { echo "--rollout-episodes must be positive" >&2; exit 2; }
+[[ "${ROLLOUT_MAX_STEPS}" =~ ^[1-9][0-9]*$ ]] || { echo "RECAP_ROLLOUT_MAX_STEPS must be positive" >&2; exit 2; }
 [[ "${NUM_TRAIN_STEPS}" =~ ^[1-9][0-9]*$ ]] || { echo "--num-train-steps must be positive" >&2; exit 2; }
 [[ "${MIN_ROLLOUT_EPISODES}" =~ ^[1-9][0-9]*$ ]] || { echo "RECAP_MIN_ROLLOUT_EPISODES must be positive" >&2; exit 2; }
 [[ "${MIN_SUCCESS_EPISODES}" =~ ^[0-9]+$ ]] || { echo "RECAP_MIN_SUCCESS_EPISODES must be non-negative" >&2; exit 2; }
@@ -445,7 +493,7 @@ else
   FSDP_DEVICES=1
 fi
 echo "[RECAP devices] ${POLICY_NAME}=${TRAIN_GPUS} (${GPU_COUNT} local devices, effective=${EFFECTIVE_POLICY_GPU_COUNT}, FSDP=${FSDP_DEVICES}, data_parallel=$((EFFECTIVE_POLICY_GPU_COUNT / FSDP_DEVICES)))"
-echo "[RECAP devices] rollout policy=${POLICY_GPU}, Isaac Sim=${ENV_GPU} (one stateful episode is sequential)"
+echo "[RECAP devices] rollout policy=${POLICY_GPU}, Isaac Sim=${ENV_GPU}, max_steps=${ROLLOUT_MAX_STEPS} (one stateful episode is sequential)"
 if (( TRAINING_REMOTE_ENABLED )); then
   echo "[RECAP devices] remote training=${TRAINING_REMOTE_HOST} ${POLICY_NAME}=${TRAINING_REMOTE_POLICY_GPUS}, WCM=${TRAINING_REMOTE_WCM_GPUS}"
 fi
@@ -566,7 +614,8 @@ run_policy_evaluation() {
       --g05-processor-path "${REMOTE_G05_PROCESSOR_PATH}" \
       --g05-action-source "${ROBODOJO_G05_ACTION_SOURCE:-fm}" \
       --checkpoint "${checkpoint}" --output "${output}" --task "${TASK_NAME}" \
-      --episodes "${episodes}" --layout-seed "${EFFECTIVE_POLICY_EVAL_LAYOUT_SEED}" \
+      --episodes "${episodes}" --max-steps "${ROLLOUT_MAX_STEPS}" \
+      --layout-seed "${EFFECTIVE_POLICY_EVAL_LAYOUT_SEED}" \
       --layout-offset "${layout_offset}" \
       --policy-gpu "${REMOTE_POLICY_GPU}" --env-gpu "${REMOTE_ENV_GPU}" \
       --env-cfg "${ENV_CFG_TYPE}" --action-type "${ACTION_TYPE}" \
@@ -589,7 +638,8 @@ run_policy_evaluation() {
       --seed "${EFFECTIVE_POLICY_EVAL_LAYOUT_SEED}" --layout-offset "${layout_offset}" \
       --policy-gpu "${POLICY_GPU}" --env-gpu "${ENV_GPU}" \
       --policy-env "${POLICY_ENV}" --eval-env "${EVAL_ENV}" \
-      --eval-num "${episodes}" --rollout-dir "${output}" --no-video \
+      --eval-num "${episodes}" --max-steps "${ROLLOUT_MAX_STEPS}" \
+      --rollout-dir "${output}" --no-video \
       >"${log}" 2>&1 || eval_status=$?
   reserve_all_local_gpus "post-evaluation processing"
   if (( eval_status != 0 )); then
@@ -607,7 +657,8 @@ evaluate_policy_checkpoint() {
   local eval_fp
   eval_fp=$(stage_fingerprint policy_eval \
     "iteration=${ACTIVE_STAGE_FP}" "checkpoint=${checkpoint}" \
-    "episodes=${POLICY_EVAL_EPISODES}" "seed=${EFFECTIVE_POLICY_EVAL_LAYOUT_SEED}" \
+    "episodes=${POLICY_EVAL_EPISODES}" "max_steps=${ROLLOUT_MAX_STEPS}" \
+    "seed=${EFFECTIVE_POLICY_EVAL_LAYOUT_SEED}" \
     "offset=${EFFECTIVE_POLICY_EVAL_LAYOUT_OFFSET}" \
     "reuse_rollout=$([[ -n "${reuse_source}" ]] && echo 1 || echo 0)")
   if [[ "${RESUME_RUN}" == "1" ]] && (( REBUILD_DOWNSTREAM == 0 )) && \
@@ -769,7 +820,11 @@ run_remote_g05_stage() {
     --decay-learning-rate "${G05_DECAY_LEARNING_RATE}"
     --decay-start-ratio "${G05_DECAY_START_RATIO}"
     --weight-decay "${G05_WEIGHT_DECAY}"
+    --seed "$((SEED + iteration))"
+    --recap-demo-weight "${DEMO_SAMPLING_WEIGHT}"
+    --recap-rollout-weight "${ROLLOUT_SAMPLING_WEIGHT}"
   )
+  stage_args+=("${G05_MEMORY_ARGS[@]}")
   stage_args+=(--remote-policy-python "${TRAINING_REMOTE_POLICY_PYTHON}")
   if [[ "${G05_WANDB_ENABLED:-1}" == "1" ]]; then stage_args+=(--wandb); else stage_args+=(--no-wandb); fi
   if (( resume_requested )); then stage_args+=(--resume); fi
@@ -809,7 +864,8 @@ RUN_CONFIG_FP=$(stage_fingerprint run \
   "demo_root=$(realpath "${DEMO_ROOT}")" "demo_format=${DEMO_FORMAT}" \
   "initial_policy=$(realpath "${INITIAL_POLICY_CHECKPOINT}")" \
   "initial_wcm=${INITIAL_WCM_CHECKPOINT}" \
-  "rollout_episodes=${ROLLOUT_EPISODES}" "min_rollouts=${MIN_ROLLOUT_EPISODES}" \
+  "rollout_episodes=${ROLLOUT_EPISODES}" "rollout_max_steps=${ROLLOUT_MAX_STEPS}" \
+  "min_rollouts=${MIN_ROLLOUT_EPISODES}" \
   "min_successes=${MIN_SUCCESS_EPISODES}" "min_failures=${MIN_FAILURE_EPISODES}" \
   "max_demos=${MAX_DEMO_EPISODES}" "wcm_replay=${WCM_REPLAY_EPISODES}" \
   "wcm_epochs=${RECAP_WCM_EPOCHS:-5}" "lookahead=${RECAP_LOOKAHEAD:-10}" \
@@ -833,6 +889,11 @@ RUN_CONFIG_FP=$(stage_fingerprint run \
   "batch_size=${OPENPI_BATCH_SIZE:-}" "learning_rate=${OPENPI_LEARNING_RATE:-5e-6}" \
   "num_workers=${OPENPI_NUM_WORKERS:-}" "decay_lr=${OPENPI_DECAY_LR:-}" \
   "weight_decay=${OPENPI_WEIGHT_DECAY:-}" "clip_grad=${OPENPI_CLIP_GRADIENT_NORM:-}" \
+  "g05_model_weights_bf16=${G05_MODEL_WEIGHTS_TO_BF16:-0}" \
+  "g05_8bit_optimizer=${G05_USE_8BIT_OPTIMIZER:-0}" \
+  "g05_checkpoint_vision=${G05_CHECKPOINT_VISION:-1}" \
+  "g05_checkpoint_vlm=${G05_CHECKPOINT_VLM:-1}" \
+  "g05_checkpoint_action_expert=${G05_CHECKPOINT_ACTION_EXPERT:-1}" \
   "eval_interval=${POLICY_EVAL_INTERVAL}" "eval_episodes=${POLICY_EVAL_EPISODES}" \
   "eval_seed=${POLICY_EVAL_LAYOUT_SEED}" "eval_offset=${POLICY_EVAL_LAYOUT_OFFSET}" \
   "env_cfg=${ENV_CFG_TYPE}" "action_type=${ACTION_TYPE}" \
@@ -887,6 +948,62 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
   REBUILD_DOWNSTREAM=0
   mkdir -p "${ITER_DIR}"
 
+  # Repair metadata-only additions before the completed-iteration resume
+  # boundary. This keeps resume idempotent without rerunning GPU stages.
+  if [[ "${RESUME_RUN}" == "1" ]]; then
+    if [[ -f "${ADVANTAGES}" && -f "${BUFFER_ROOT}/meta/success_labels.json" ]]; then
+      "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/recap_advantage_metadata.py" \
+        --advantages "${ADVANTAGES}" \
+        --success-labels "${BUFFER_ROOT}/meta/success_labels.json"
+    fi
+    if [[ -f "${ITER_DIR}/value_videos/summary.json" && \
+          -f "${ITER_DIR}/value_videos/episode_curves.json" && \
+          -d "${RAW_ROLLOUTS}/episodes" ]]; then
+      "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/value_video_metadata.py" \
+        --output-dir "${ITER_DIR}/value_videos" \
+        --rollout-root "${RAW_ROLLOUTS}"
+    fi
+  fi
+
+  # A completed iteration is an immutable resume boundary. Replaying its
+  # individual stages is both wasteful and unsafe: a runtime-only change such
+  # as the DDP world size can invalidate one old stage fingerprint and then
+  # cascade into rebuilding the old replay buffer from the demonstration-only
+  # input. Restore the state needed by the next iteration directly instead.
+  if [[ "${RESUME_RUN}" == "1" ]] && (( REUSE_COMPLETED_ARTIFACTS )) && \
+     "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/recap_artifacts.py" iteration-complete \
+       --iteration-root "${ITER_DIR}" >/dev/null 2>&1; then
+    if [[ -n "${PREVIOUS_BUFFER}" ]]; then
+      PREVIOUS_WCM_INPUT_EPISODES=$("${WCM_PYTHON_BIN}" -c \
+        'import json,sys; print(json.load(open(sys.argv[1]))["total_episodes"])' \
+        "${PREVIOUS_BUFFER}/meta/info.json")
+    else
+      DEMO_STATE_BUFFER="${ITER_DIR}/demo_replay_buffer"
+      if [[ -f "${DEMO_STATE_BUFFER}/meta/info.json" ]]; then
+        PREVIOUS_WCM_INPUT_EPISODES=$("${WCM_PYTHON_BIN}" -c \
+          'import json,sys; print(json.load(open(sys.argv[1]))["total_episodes"])' \
+          "${DEMO_STATE_BUFFER}/meta/info.json")
+      else
+        PREVIOUS_WCM_INPUT_EPISODES=0
+      fi
+    fi
+    CURRENT_POLICY=$("${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/recap_artifacts.py" \
+      selected-checkpoint --iteration-root "${ITER_DIR}")
+    PREVIOUS_WCM="${WCM_OUTPUT}/deploy.pt"
+    PREVIOUS_BUFFER="${BUFFER_ROOT}"
+    BUFFER_EPISODES=$("${WCM_PYTHON_BIN}" -c \
+      'import json,sys; print(json.load(open(sys.argv[1]))["total_episodes"])' \
+      "${BUFFER_ROOT}/meta/info.json")
+    if [[ -d "${POLICY_DATASET}" ]]; then
+      PREVIOUS_POLICY_DATASET="${POLICY_DATASET}"
+    else
+      PREVIOUS_POLICY_DATASET=""
+    fi
+    ROLLOUT_ROOTS+=("${RAW_ROLLOUTS}")
+    echo "[RECAP resume] restored completed iteration ${iteration}/${ITERATIONS}: policy=${CURRENT_POLICY}, replay=${BUFFER_EPISODES} episodes"
+    continue
+  fi
+
   if (( ! REMOTE_ENABLED )); then
   # Every update first gathers experience from the policy it is about to
   # improve. This guarantees that iteration 1 already contains rollout
@@ -939,6 +1056,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
             --policy-env "${POLICY_ENV}" \
             --eval-env "${EVAL_ENV}" \
             --eval-num "${remaining_episodes}" \
+            --max-steps "${ROLLOUT_MAX_STEPS}" \
             --layout-offset "${layout_offset}" \
             --rollout-dir "${RAW_ROLLOUTS}" \
             --no-video
@@ -1100,6 +1218,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
           --remote-python-bin "${REMOTE_PYTHON_BIN}" \
           --checkpoint "${CURRENT_POLICY}" --output "${RAW_ROLLOUTS}" \
           --task "${TASK_NAME}" --episodes "${ROLLOUT_EPISODES}" \
+          --max-steps "${ROLLOUT_MAX_STEPS}" \
           --layout-seed "${ROLLOUT_LAYOUT_SEED}" \
           --policy-gpu "${REMOTE_POLICY_GPU}" --env-gpu "${REMOTE_ENV_GPU}" \
           --env-cfg "${ENV_CFG_TYPE}" --action-type "${ACTION_TYPE}" \
@@ -1392,9 +1511,13 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
           --num-workers "${G05_NUM_WORKERS}" \
           --grad-accumulation-steps "${G05_GRAD_ACCUMULATION_STEPS}" \
           --learning-rate "${G05_LEARNING_RATE}" --warmup-steps "${G05_WARMUP_STEPS}" \
+          --recap-demo-weight "${DEMO_SAMPLING_WEIGHT}" \
+          --seed "$((SEED + iteration))" \
+          --recap-rollout-weight "${ROLLOUT_SAMPLING_WEIGHT}" \
           --decay-learning-rate "${G05_DECAY_LEARNING_RATE}" \
           --decay-start-ratio "${G05_DECAY_START_RATIO}" \
-          --weight-decay "${G05_WEIGHT_DECAY}" "${G05_WANDB_ARGS[@]}" "${G05_RESUME_ARGS[@]}"
+          --weight-decay "${G05_WEIGHT_DECAY}" "${G05_MEMORY_ARGS[@]}" \
+          "${G05_WANDB_ARGS[@]}" "${G05_RESUME_ARGS[@]}"
       else
       HF_LEROBOT_HOME="${LEROBOT_HOME}" \
       CUDA_VISIBLE_DEVICES="${TRAIN_GPUS}" \
@@ -1509,6 +1632,12 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
             --title "WCM RECAP ITER ${iteration}"
         reserve_all_local_gpus "post-value-video reporting"
       fi
+      "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/value_video_metadata.py" \
+        --output-dir "${ITER_DIR}/value_videos" --rollout-root "${RAW_ROLLOUTS}"
+      artifact_complete value_videos "${ITER_DIR}/value_videos" "${VALUE_VIDEO_EPISODES}" || {
+        echo "Value-video output is missing instruction metadata" >&2
+        exit 1
+      }
       mark_artifact value_videos "${ITER_DIR}/value_videos"
       REBUILD_DOWNSTREAM=1
     fi

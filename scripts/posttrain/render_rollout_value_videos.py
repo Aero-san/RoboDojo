@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from itertools import zip_longest
 import json
 import math
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -15,9 +16,14 @@ from typing import Any
 import numpy as np
 import torch
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
+ROOT_DIR = Path(
+    os.environ.get(
+        "RECAP_REMOTE_REPO_ROOT",
+        Path(__file__).resolve().parents[2],
+    )
+).expanduser().resolve()
 WCM_ROOT = ROOT_DIR / "external_dependencies" / "WCM"
-POSTTRAIN_DIR = Path(__file__).resolve().parent
+POSTTRAIN_DIR = ROOT_DIR / "scripts" / "posttrain"
 sys.path.insert(0, str(WCM_ROOT))
 sys.path.insert(0, str(POSTTRAIN_DIR))
 
@@ -120,6 +126,11 @@ def _score_episode(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     source_episode_id = int(manifest["episode_index"])
     episode_id = int(manifest.get("_render_episode_id", source_episode_id))
+    instruction = str(manifest.get("task", "")).strip()
+    if not instruction:
+        raise ValueError(
+            f"episode={source_episode_id} rollout manifest has no task instruction."
+        )
     length = int(manifest["length"])
     history_size = int(config.data.history_size)
     window_size = history_size + int(config.data.prediction_horizon)
@@ -183,7 +194,7 @@ def _score_episode(
             {
                 "images": list(frame_window),
                 "actions": torch.from_numpy(actions[start : start + history_size]),
-                "instruction": str(manifest["task"]),
+                "instruction": instruction,
                 "valid_mask": torch.ones(history_size, dtype=torch.bool),
                 "episode_id": episode_id,
                 "frame_indices": torch.arange(
@@ -233,6 +244,7 @@ def _score_episode(
         "score": float(manifest["score"]),
         "source": str(episode_dir),
         "source_episode_id": source_episode_id,
+        "instruction": instruction,
     }
     video_map = {
         "path": str((episode_dir / "cam_high.mp4").resolve()),
@@ -339,6 +351,7 @@ def main(args: argparse.Namespace) -> None:
                 "episode_id": curve["episode_id"],
                 "success": curve["success"],
                 "score": curve["score"],
+                "instruction": curve["instruction"],
                 "value_min": min(curve["values"]),
                 "value_max": max(curve["values"]),
             }

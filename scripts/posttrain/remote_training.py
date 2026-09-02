@@ -38,6 +38,7 @@ def _install_remote_wcm_support(args: argparse.Namespace) -> None:
         ("run_wcm.py", "run_wcm.py"),
         ("wcm_checkpoint.py", "run_wcm.py"),
         ("annotate_recap_advantages.py", "annotate_recap_advantages.py"),
+        ("recap_advantage_metadata.py", "annotate_recap_advantages.py"),
         ("render_rollout_value_videos.py", "render_rollout_value_videos.py"),
     )
     for name, reference_name in files:

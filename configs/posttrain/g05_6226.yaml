@@ -29,11 +29,11 @@ data:
   norm_asset_id: null
 
 devices:
-  policy_train: [4,5,6,7]
-  wcm_train: [4,5,6,7]
-  rollout_policy: 4
-  rollout_environment: 5
-  value_video: 4
+  policy_train: [2,3]
+  wcm_train: [2,3]
+  rollout_policy: 2
+  rollout_environment: 3
+  value_video: 2
   reservation:
     enabled: true
     leave_free_mib: 2048
@@ -43,6 +43,7 @@ devices:
 
 rollout:
   episodes: 50
+  max_steps: 40
   layout_seed: 0
   minimum:
     total: 30
@@ -123,6 +124,15 @@ g05:
   num_workers: 8
   # Preserve the previous effective batch: 8 x 4 GPUs x 16 = 512.
   grad_accumulation_steps: 1
+  # GalaxeaVLA currently uses DDP, not FSDP. These are its native
+  # per-rank memory controls; activation checkpointing trades compute for memory.
+  memory:
+    model_weights_to_bf16: false
+    use_8bit_optimizer: false
+    activation_checkpointing:
+      vision: false
+      vlm: false
+      action_expert: false
   wandb_enabled: false
   optimizer:
     learning_rate: 1.0e-5

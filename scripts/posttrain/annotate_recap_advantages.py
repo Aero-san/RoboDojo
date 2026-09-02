@@ -7,10 +7,18 @@ import json
 import os
 from pathlib import Path
 import sys
+import traceback
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+
+# Advantage inference consumes the processor/model assets that were already
+# resolved while training the WCM. Allowing every torchrun rank to probe the
+# Hugging Face endpoint turns a transient network outage into many minutes of
+# identical retries before inference can even start.
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 WCM_ROOT = ROOT_DIR / "external_dependencies" / "WCM"
@@ -18,12 +26,14 @@ sys.path.insert(0, str(WCM_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from progress import progress_iter  # noqa: E402
+from recap_advantage_metadata import positive_statistics  # noqa: E402
 from robodojo_dataset import load_robodojo_dataset  # noqa: E402
 from wcm_checkpoint import adapt_wcm_state_dict  # noqa: E402
 from world_critic.data import LeRobotWorldCriticDataset, WorldCriticCollator, build_processor  # noqa: E402
 from world_critic.distributed import (  # noqa: E402
     DistributedContext,
     DistributedEvalSampler,
+    broadcast_object,
     cleanup_distributed,
     gather_objects,
     initialize_distributed,
@@ -148,6 +158,10 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
     if args.task:
         os.environ["WCM_TASK_NAME"] = args.task
 
+    print(
+        f"[RECAP value inference][rank={ctx.rank}] loading WCM and cached processor assets",
+        flush=True,
+    )
     config, model = _load_model(Path(args.wcm_checkpoint).expanduser().resolve(), device)
     config.data.root = str(root)
     config.data.split_manifest = None
@@ -228,9 +242,53 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
         f"[RECAP value inference][rank={ctx.rank}] shard gather complete",
         flush=True,
     )
-    if not ctx.is_main:
-        return
-    assert gathered_shards is not None
+    completion: dict[str, object] | None = None
+    if ctx.is_main:
+        assert gathered_shards is not None
+        try:
+            _write_advantage_labels(
+                args,
+                root=root,
+                dataset=dataset,
+                episode_ids=episode_ids,
+                gathered_shards=gathered_shards,
+            )
+        except Exception:
+            completion = {"ok": False, "error": traceback.format_exc()}
+        else:
+            completion = {"ok": True, "error": ""}
+
+    # Non-main ranks must remain alive until rank zero has atomically written
+    # the labels. Otherwise they can enter NCCL teardown while rank zero is
+    # still doing CPU post-processing, which has caused torchrun to remain
+    # alive after the progress bar reached 100%.
+    completion = broadcast_object(completion, ctx, src=0)
+    assert completion is not None
+    if not bool(completion["ok"]):
+        raise RuntimeError(
+            "Rank zero failed while finalizing RECAP advantage labels:\n"
+            + str(completion["error"])
+        )
+    print(
+        f"[RECAP value inference][rank={ctx.rank}] labels finalized; exiting",
+        flush=True,
+    )
+
+
+def _write_advantage_labels(
+    args: argparse.Namespace,
+    *,
+    root: Path,
+    dataset,
+    episode_ids: list[int],
+    gathered_shards: list[
+        tuple[
+            dict[tuple[int, int], float],
+            dict[tuple[int, int], int],
+            dict[tuple[int, int], int],
+        ]
+    ],
+) -> None:
     value_sum, value_count = _merge_value_shards(gathered_shards)
 
     provenance = _provenance(root)
@@ -278,12 +336,18 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
             return_raw_min=dataset._return_raw_min,
             return_raw_max=dataset._return_raw_max,
         )
+        episode_success = dataset._success_rows[rows]
+        if not np.all(episode_success == episode_success[0]):
+            raise RuntimeError(
+                f"Replay-buffer success label changes within episode={episode}."
+            )
         all_advantages.extend(map(float, advantages))
         records.append(
             {
                 "episode_index": episode,
                 "task": task,
                 "source_kind": provenance.get(episode, "unknown"),
+                "success": bool(episode_success[0]),
                 "values": values.tolist(),
                 "advantages": advantages.tolist(),
             }
@@ -302,6 +366,7 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
         positive_count += int(positive.sum())
         frame_count += len(positive)
 
+    statistics = positive_statistics(records)
     output = Path(args.output).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
     header = {
@@ -312,6 +377,7 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
         "failure_penalty": args.failure_penalty,
         "positive_fraction": args.positive_fraction,
         "threshold": threshold,
+        "positive_statistics": statistics,
         "return_normalization": "global_minmax_minus_one_zero",
         "return_raw_min": dataset._return_raw_min,
         "return_raw_max": dataset._return_raw_max,
@@ -330,7 +396,12 @@ def _run(args: argparse.Namespace, ctx: DistributedContext, device: torch.device
     print(
         f"saved RECAP labels: {output} episodes={len(records)} frames={frame_count} "
         f"positive={positive_count} ({positive_count / max(frame_count, 1):.1%}) "
-        f"world_size={ctx.world_size}"
+        f"successful_rollout_positive="
+        f"{statistics['positive_frame_counts']['successful_rollout']} "
+        f"failed_rollout_positive="
+        f"{statistics['positive_frame_counts']['failed_rollout']} "
+        f"world_size={len(gathered_shards)}",
+        flush=True,
     )
 
 

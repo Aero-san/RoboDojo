@@ -47,6 +47,7 @@ devices:
 
 rollout:
   episodes: 100
+  max_steps: 40
   layout_seed: 0
   minimum:
     total: 50

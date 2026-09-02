@@ -5,7 +5,11 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from scripts.posttrain.recap_artifacts import check, finalize_iteration
+from scripts.posttrain.recap_artifacts import (
+    _validate_completed_iteration,
+    check,
+    finalize_iteration,
+)
 
 
 def _write(path: Path, value: str = "x") -> Path:
@@ -63,7 +67,75 @@ class RecapAdvantageArtifactTest(unittest.TestCase):
             self.assertFalse(check("advantages", path, 2))
 
 
+class RecapBufferArtifactTest(unittest.TestCase):
+    def test_task_slug_is_required_for_reusable_buffer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "buffer"
+            for relative in (
+                "meta/tasks.jsonl",
+                "meta/success_labels.json",
+                "meta/provenance.jsonl",
+            ):
+                _write(path / relative, "{}\n")
+            _write(
+                path / "meta/replay_buffer.json",
+                json.dumps({"task": "pour_by_language"}),
+            )
+            _write(path / "meta/info.json", json.dumps({"total_episodes": 1}))
+            episodes_path = path / "meta/episodes.jsonl"
+            _write(
+                episodes_path,
+                json.dumps(
+                    {
+                        "episode_index": 0,
+                        "tasks": ["Pour the first bottle into its matching bowl."],
+                        "length": 3,
+                    }
+                )
+                + "\n",
+            )
+
+            self.assertFalse(check("buffer", path, 0))
+
+            _write(
+                episodes_path,
+                json.dumps(
+                    {
+                        "episode_index": 0,
+                        "tasks": ["Pour the first bottle into its matching bowl."],
+                        "task_slug": "pour_by_language",
+                        "length": 3,
+                    }
+                )
+                + "\n",
+            )
+            self.assertTrue(check("buffer", path, 0))
+
+            episode = json.loads(episodes_path.read_text(encoding="utf-8"))
+            episode["task_slug"] = "Pour each bottle into its matching bowl."
+            _write(episodes_path, json.dumps(episode) + "\n")
+            self.assertFalse(check("buffer", path, 0))
+
+
 class RecapArtifactFinalizationTest(unittest.TestCase):
+    def test_completed_iteration_is_a_valid_resume_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            iteration = _completed_iteration(root)
+
+            selection = _validate_completed_iteration(iteration)
+
+            self.assertEqual(selection["iteration"], 1)
+
+    def test_iteration_missing_evaluation_is_not_a_resume_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            iteration = _completed_iteration(root)
+            (iteration / "policy_evaluations/step_100/evaluation.json").unlink()
+
+            with self.assertRaisesRegex(RuntimeError, "evaluation"):
+                _validate_completed_iteration(iteration)
+
     def test_completed_iteration_merges_diagnostics_and_removes_incomplete(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

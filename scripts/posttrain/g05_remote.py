@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import os
-import shlex
 from functools import partial
+import os
 from pathlib import Path
+import shlex
 from typing import Callable
 
 try:
@@ -26,6 +26,11 @@ def _install_remote_trainer(args: argparse.Namespace) -> None:
         (
             repo_root / "scripts/posttrain/g05_finetune_entry.py",
             f"{args.remote_repo_root}/scripts/posttrain/g05_finetune_entry.py",
+            f"{args.remote_repo_root}/scripts/posttrain/train_g05.py",
+        ),
+        (
+            repo_root / "scripts/posttrain/g05_source_sampling.py",
+            f"{args.remote_repo_root}/scripts/posttrain/g05_source_sampling.py",
             f"{args.remote_repo_root}/scripts/posttrain/train_g05.py",
         ),
         (
@@ -98,6 +103,29 @@ def _run(args: argparse.Namespace, run_stage: Callable[..., None]) -> None:
             str(args.decay_start_ratio),
             "--weight-decay",
             str(args.weight_decay),
+            "--seed",
+            str(getattr(args, "seed", 0)),
+            "--recap-demo-weight",
+            str(getattr(args, "recap_demo_weight", 1.0)),
+            "--recap-rollout-weight",
+            str(getattr(args, "recap_rollout_weight", 1.0)),
+            (
+                "--model-weights-to-bf16"
+                if args.model_weights_to_bf16
+                else "--no-model-weights-to-bf16"
+            ),
+            (
+                "--use-8bit-optimizer"
+                if args.use_8bit_optimizer
+                else "--no-use-8bit-optimizer"
+            ),
+            "--checkpoint-vision" if args.checkpoint_vision else "--no-checkpoint-vision",
+            "--checkpoint-vlm" if args.checkpoint_vlm else "--no-checkpoint-vlm",
+            (
+                "--checkpoint-action-expert"
+                if args.checkpoint_action_expert
+                else "--no-checkpoint-action-expert"
+            ),
             "--wandb" if args.wandb else "--no-wandb",
             *(["--resume"] if args.resume else []),
         ]
@@ -134,6 +162,9 @@ def add_parser(subparsers, common_parser, stage_identity, run_stage) -> None:
     parser.add_argument("--task-config", required=True)
     parser.add_argument("--experiment-name", required=True)
     parser.add_argument("--steps", type=int, required=True)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--recap-demo-weight", type=float, default=1.0)
+    parser.add_argument("--recap-rollout-weight", type=float, default=1.0)
     parser.add_argument("--save-interval", type=int, required=True)
     parser.add_argument("--batch-size", type=int, required=True)
     parser.add_argument("--num-workers", type=int, required=True)
@@ -143,6 +174,31 @@ def add_parser(subparsers, common_parser, stage_identity, run_stage) -> None:
     parser.add_argument("--decay-learning-rate", type=float, required=True)
     parser.add_argument("--decay-start-ratio", type=float, required=True)
     parser.add_argument("--weight-decay", type=float, required=True)
+    parser.add_argument(
+        "--model-weights-to-bf16",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--use-8bit-optimizer",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--checkpoint-vision",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--checkpoint-vlm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--checkpoint-action-expert",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--resume", action="store_true")
     parser.set_defaults(function=partial(_run, run_stage=run_stage))

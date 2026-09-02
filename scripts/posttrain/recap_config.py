@@ -41,7 +41,9 @@ for obsolete in (
 FIELDS.update(
     {
         "policy.name": Field("RECAP_POLICY_NAME", "str", "pi05", ("pi05", "g05")),
-        "data.format": Field("LEROBOT_DATA_FORMAT", "str", "v2.1", ("v2.1", "v3.0")),
+        "data.format": Field(
+            "RECAP_DEMO_FORMAT", "str", "v2.1", ("v2.1", "v3.0", "hdf5")
+        ),
         "rollout.remote.g05_root": Field(
             "RECAP_REMOTE_G05_ROOT", "optional_str", None
         ),
@@ -71,6 +73,21 @@ FIELDS.update(
         "g05.num_workers": Field("G05_NUM_WORKERS", "int", 8, minimum=0),
         "g05.grad_accumulation_steps": Field(
             "G05_GRAD_ACCUMULATION_STEPS", "int", 1, minimum=1
+        ),
+        "g05.memory.model_weights_to_bf16": Field(
+            "G05_MODEL_WEIGHTS_TO_BF16", "bool", False
+        ),
+        "g05.memory.use_8bit_optimizer": Field(
+            "G05_USE_8BIT_OPTIMIZER", "bool", False
+        ),
+        "g05.memory.activation_checkpointing.vision": Field(
+            "G05_CHECKPOINT_VISION", "bool", True
+        ),
+        "g05.memory.activation_checkpointing.vlm": Field(
+            "G05_CHECKPOINT_VLM", "bool", True
+        ),
+        "g05.memory.activation_checkpointing.action_expert": Field(
+            "G05_CHECKPOINT_ACTION_EXPERT", "bool", True
         ),
         "g05.optimizer.learning_rate": Field(
             "G05_LEARNING_RATE", "float", 1e-5, minimum=0
@@ -117,8 +134,8 @@ def _validate(values: dict[str, Any]) -> None:
     else:
         if values["environment.action_type"] != "joint":
             raise ValueError("G05 RECAP currently requires environment.action_type: joint.")
-        if values["data.format"] != "v3.0":
-            raise ValueError("G05 RECAP requires data.format: v3.0.")
+        if values["data.format"] not in {"v3.0", "hdf5"}:
+            raise ValueError("G05 RECAP requires data.format to be v3.0 or hdf5.")
         if values["g05.root"] is None:
             raise ValueError("G05 RECAP requires g05.root.")
         if (
@@ -150,11 +167,6 @@ def _validate(values: dict[str, Any]) -> None:
         )
     if values["recap.sampling.demonstrations"] <= 0 or values["recap.sampling.rollouts"] <= 0:
         raise ValueError("RECAP sampling weights must be positive.")
-    if policy == "g05" and (
-        values["recap.sampling.demonstrations"] != 1.0
-        or values["recap.sampling.rollouts"] != 1.0
-    ):
-        raise ValueError("G05 currently requires equal RECAP source sampling weights (1.0/1.0).")
 
     steps = values[f"{policy}.steps"]
     warmup = values[f"{policy}.optimizer.warmup_steps"]

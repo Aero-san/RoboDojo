@@ -26,6 +26,7 @@ model:
     proprio_dim: 20
     checkpoint_vlm: true
     checkpoint_action_expert: true
+    checkpoint_vision: true
     discrete_action: false
     continuous_action: true
     return_continuous_action: true

@@ -13,9 +13,91 @@ from scripts.posttrain import g05_remote, remote_recap, remote_training
 from scripts.posttrain.prepare_g05_inference_checkpoint import (
     prepare_g05_inference_checkpoint,
 )
+from scripts.posttrain.train_g05 import _memory_overrides
 
 
 class RemoteTrainingHelpersTest(unittest.TestCase):
+    def test_g05_native_memory_overrides_are_explicit(self):
+        args = SimpleNamespace(
+            model_weights_to_bf16=True,
+            use_8bit_optimizer=True,
+            checkpoint_vision=False,
+            checkpoint_vlm=True,
+            checkpoint_action_expert=True,
+        )
+
+        self.assertEqual(
+            _memory_overrides(args),
+            [
+                "model.model_weights_to_bf16=true",
+                "model.use_8bit_optimizer=true",
+                "model.model_arch.checkpoint_vision=false",
+                "model.model_arch.checkpoint_vlm=true",
+                "model.model_arch.checkpoint_action_expert=true",
+            ],
+        )
+
+    def test_g05_remote_forwards_native_memory_options(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bundle = root / "bundle"
+            checkpoint = bundle / "checkpoints/step_100.pt"
+            checkpoint.parent.mkdir(parents=True)
+            checkpoint.touch()
+            args = SimpleNamespace(
+                dataset=str(root / "dataset"),
+                init_policy=str(bundle),
+                output=str(root / "output"),
+                remote_repo_root="/remote/RoboDojo",
+                remote_policy_python="/remote/g05/python",
+                g05_root="/remote/GalaxeaVLA",
+                processor_path="/remote/GalaxeaVLA/processor",
+                task_config="robodojo_recap",
+                experiment_name="recap-test",
+                gpus="4,5",
+                steps=100,
+                save_interval=50,
+                batch_size=2,
+                num_workers=0,
+                grad_accumulation_steps=1,
+                learning_rate=1e-5,
+                warmup_steps=10,
+                decay_learning_rate=1e-6,
+                decay_start_ratio=0.5,
+                weight_decay=1e-4,
+                model_weights_to_bf16=True,
+                use_8bit_optimizer=True,
+                checkpoint_vision=False,
+                checkpoint_vlm=True,
+                checkpoint_action_expert=True,
+                wandb=False,
+                resume=False,
+                job_id="g05-memory-test",
+                seed=17,
+                recap_demo_weight=3.0,
+                recap_rollout_weight=1.0,
+            )
+            with (
+                mock.patch.object(g05_remote, "_install_remote_trainer"),
+                mock.patch.object(
+                    g05_remote.remote_recap,
+                    "_g05_bundle",
+                    return_value=(bundle, checkpoint),
+                ),
+            ):
+                run_stage = mock.Mock()
+                g05_remote._run(args, run_stage)
+
+            command = run_stage.call_args.kwargs["command"]
+            self.assertIn("--model-weights-to-bf16", command)
+            self.assertIn("--use-8bit-optimizer", command)
+            self.assertIn("--no-checkpoint-vision", command)
+            self.assertIn("--checkpoint-vlm", command)
+            self.assertIn("--checkpoint-action-expert", command)
+            self.assertIn("--seed 17", command)
+            self.assertIn("--recap-demo-weight 3.0", command)
+            self.assertIn("--recap-rollout-weight 1.0", command)
+
     def test_wcm_remote_support_installer_targets_checkout_atomically(self):
         args = SimpleNamespace(
             host="XYZ6226",
@@ -35,6 +117,7 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                 "run_wcm.py",
                 "wcm_checkpoint.py",
                 "annotate_recap_advantages.py",
+                "recap_advantage_metadata.py",
                 "render_rollout_value_videos.py",
             ],
         )
@@ -56,6 +139,7 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                 "/remote/RoboDojo/scripts/posttrain/run_wcm.py",
                 "/remote/RoboDojo/scripts/posttrain/wcm_checkpoint.py",
                 "/remote/RoboDojo/scripts/posttrain/annotate_recap_advantages.py",
+                "/remote/RoboDojo/scripts/posttrain/recap_advantage_metadata.py",
                 "/remote/RoboDojo/scripts/posttrain/render_rollout_value_videos.py",
             ],
         )
@@ -80,6 +164,16 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
         context = keywords["multiprocessing_context"]
         self.assertIsInstance(context, ast.IfExp)
         self.assertEqual(ast.literal_eval(context.body), "spawn")
+
+    def test_advantage_inference_is_offline_and_synchronizes_finalization(self):
+        source = Path("scripts/posttrain/annotate_recap_advantages.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('os.environ["HF_HUB_OFFLINE"] = "1"', source)
+        self.assertIn('os.environ["TRANSFORMERS_OFFLINE"] = "1"', source)
+        self.assertIn("completion = broadcast_object(completion, ctx, src=0)", source)
+        self.assertIn("labels finalized; exiting", source)
 
     def test_remote_multigpu_advantages_use_torchrun(self):
         args = SimpleNamespace(
@@ -130,6 +224,7 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
             [
                 "train_g05.py",
                 "g05_finetune_entry.py",
+                "g05_source_sampling.py",
                 "robodojo_recap.yaml",
                 "robodojo_recap.yaml",
             ],
@@ -143,12 +238,16 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
             uploads[1][1],
         )
         self.assertIn(
-            "XYZ6226:/remote/RoboDojo/configs/g05/data/robodojo_recap.yaml.tmp-",
+            "XYZ6226:/remote/RoboDojo/scripts/posttrain/g05_source_sampling.py.tmp-",
             uploads[2][1],
         )
         self.assertIn(
-            "XYZ6226:/remote/RoboDojo/configs/g05/task/robodojo_recap.yaml.tmp-",
+            "XYZ6226:/remote/RoboDojo/configs/g05/data/robodojo_recap.yaml.tmp-",
             uploads[3][1],
+        )
+        self.assertIn(
+            "XYZ6226:/remote/RoboDojo/configs/g05/task/robodojo_recap.yaml.tmp-",
+            uploads[4][1],
         )
         commands = [call.args[1] for call in remote.call_args_list]
         self.assertEqual(commands[0][:2], ["chown", "--reference"])
@@ -158,6 +257,7 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
             [
                 "/remote/RoboDojo/scripts/posttrain/train_g05.py",
                 "/remote/RoboDojo/scripts/posttrain/g05_finetune_entry.py",
+                "/remote/RoboDojo/scripts/posttrain/g05_source_sampling.py",
                 "/remote/RoboDojo/configs/g05/data/robodojo_recap.yaml",
                 "/remote/RoboDojo/configs/g05/task/robodojo_recap.yaml",
             ],
@@ -261,7 +361,7 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                             "_target_": "g05.tokenizer.interface.vq_base.VQActionTokenizer",
                             "vq_config": {
                                 "vqvae_type": "g05.tokenizer.models.actioncodec2_v2.wrapper.ActionCodecV2Wrapper",
-                                "ckpt_dir": "${oc.env:G05_ACTION_TOKENIZER_PATH}",
+                                "ckpt_dir": "/training-host/action_tokenizer.pt",
                             },
                         },
                         "logger": {
@@ -289,6 +389,7 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                     "logger.project",
                     "logger.workspace",
                     "portable:model.model_arch.hf_processor_path",
+                    "portable:tokenizer.vq_config.ckpt_dir",
                     "materialized:model.model_arch.action_tokenizer",
                     "materialized:model.model_arch.AT_CONFIG",
                 ],
@@ -309,11 +410,68 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                 "g05.tokenizer.interface.vq_base.VQActionTokenizer",
             )
             self.assertEqual(
+                result["tokenizer"]["vq_config"]["ckpt_dir"],
+                "${oc.env:G05_ACTION_TOKENIZER_PATH}",
+            )
+            self.assertEqual(
                 result["model"]["model_arch"]["AT_CONFIG"],
                 {
                     "vqvae_type": "g05.tokenizer.models.actioncodec2_v2.wrapper.ActionCodecV2Wrapper",
                     "ckpt_dir": "${oc.env:G05_ACTION_TOKENIZER_PATH}",
                 },
+            )
+            self.assertEqual(prepare_g05_inference_checkpoint(root), [])
+
+    def test_g05_inference_checkpoint_repairs_materialized_tokenizer_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / ".hydra/config.yaml"
+            config_path.parent.mkdir()
+            tokenizer = {
+                "_target_": "g05.tokenizer.interface.vq_base.VQActionTokenizer",
+                "vq_config": {
+                    "vqvae_type": "g05.tokenizer.models.actioncodec2_v2.wrapper.ActionCodecV2Wrapper",
+                    "ckpt_dir": "/training-host/action_tokenizer.pt",
+                },
+            }
+            config_path.write_text(
+                yaml.safe_dump(
+                    {
+                        "data": {"action_size": 16},
+                        "model": {
+                            "tokenizer": tokenizer,
+                            "model_arch": {
+                                "hf_processor_path": "${oc.env:G05_HF_PROCESSOR_PATH}",
+                                "action_tokenizer": tokenizer["_target_"],
+                                "AT_CONFIG": {
+                                    **tokenizer["vq_config"],
+                                    "ckpt_dir": "/training-host/action_tokenizer.pt",
+                                },
+                            },
+                        },
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+
+            changes = prepare_g05_inference_checkpoint(root)
+            result = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                changes,
+                [
+                    "portable:tokenizer.vq_config.ckpt_dir",
+                    "portable:model.model_arch.AT_CONFIG.ckpt_dir",
+                ],
+            )
+            self.assertEqual(
+                result["model"]["tokenizer"]["vq_config"]["ckpt_dir"],
+                "${oc.env:G05_ACTION_TOKENIZER_PATH}",
+            )
+            self.assertEqual(
+                result["model"]["model_arch"]["AT_CONFIG"]["ckpt_dir"],
+                "${oc.env:G05_ACTION_TOKENIZER_PATH}",
             )
             self.assertEqual(prepare_g05_inference_checkpoint(root), [])
 
@@ -329,6 +487,12 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
         self.assertTrue(
             any(
                 "prepare_g05_inference_checkpoint.py.tmp-" in destination
+                for destination in destinations
+            )
+        )
+        self.assertTrue(
+            any(
+                "render_rollout_value_videos.py.tmp-" in destination
                 for destination in destinations
             )
         )
@@ -448,6 +612,7 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                 g05_action_source="fm",
                 task="general_pickup",
                 episodes=3,
+                max_steps=40,
                 layout_seed=0,
                 layout_offset=0,
                 policy_gpu=0,
@@ -486,6 +651,18 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                 environment["RECAP_REMOTE_G05_PROCESSOR_PATH"],
                 processor,
             )
+            self.assertEqual(environment["RECAP_REMOTE_MAX_STEPS"], "40")
+
+    def test_rollout_max_steps_reaches_local_and_remote_eval_launchers(self):
+        run_recap = Path("scripts/posttrain/run_recap.sh").read_text(encoding="utf-8")
+        worker = Path("scripts/posttrain/remote_recap_worker.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertGreaterEqual(
+            run_recap.count('--max-steps "${ROLLOUT_MAX_STEPS}"'), 3
+        )
+        self.assertIn('--max-steps "${RECAP_REMOTE_MAX_STEPS}"', worker)
 
     def test_value_video_rebuilds_missing_remote_rollout_cache(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -43,6 +43,7 @@ devices:
 
 rollout:
   episodes: 30
+  max_steps: 40
   layout_seed: 0
   minimum:
     total: 20
@@ -123,6 +124,15 @@ g05:
   num_workers: 8
   # Preserve the previous effective batch: 8 x 4 GPUs x 16 = 512.
   grad_accumulation_steps: 16
+  # GalaxeaVLA currently uses DDP, not FSDP. These are its native
+  # per-rank memory controls; activation checkpointing trades compute for memory.
+  memory:
+    model_weights_to_bf16: false
+    use_8bit_optimizer: false
+    activation_checkpointing:
+      vision: true
+      vlm: true
+      action_expert: true
   wandb_enabled: false
   optimizer:
     learning_rate: 1.0e-5

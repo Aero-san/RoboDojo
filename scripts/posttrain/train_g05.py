@@ -65,6 +65,26 @@ def _latest_resume(output: Path) -> Path:
     return candidates[-1]
 
 
+def _memory_overrides(args: argparse.Namespace) -> list[str]:
+    return [
+        f"model.model_weights_to_bf16={str(getattr(args, 'model_weights_to_bf16', False)).lower()}",
+        f"model.use_8bit_optimizer={str(getattr(args, 'use_8bit_optimizer', False)).lower()}",
+        f"model.model_arch.checkpoint_vision={str(getattr(args, 'checkpoint_vision', True)).lower()}",
+        f"model.model_arch.checkpoint_vlm={str(getattr(args, 'checkpoint_vlm', True)).lower()}",
+        (
+            "model.model_arch.checkpoint_action_expert="
+            f"{str(getattr(args, 'checkpoint_action_expert', True)).lower()}"
+        ),
+    ]
+
+
+def _sampling_weights(args: argparse.Namespace) -> tuple[float, float]:
+    return (
+        float(getattr(args, "recap_demo_weight", 1.0)),
+        float(getattr(args, "recap_rollout_weight", 1.0)),
+    )
+
+
 def main(args: argparse.Namespace) -> None:
     if args.learning_rate <= 0:
         raise ValueError("--learning-rate must be positive.")
@@ -75,6 +95,10 @@ def main(args: argparse.Namespace) -> None:
     if int(args.steps * args.decay_start_ratio) < args.warmup_steps:
         raise ValueError("--decay-start-ratio starts decay before warmup completes.")
     lr_min_ratio = args.decay_learning_rate / args.learning_rate
+    demo_weight, rollout_weight = _sampling_weights(args)
+    seed = int(getattr(args, "seed", 0))
+    if demo_weight <= 0 or rollout_weight <= 0:
+        raise ValueError("RECAP demo and rollout sampling weights must both be positive.")
 
     root = Path(args.g05_root).expanduser().resolve()
     trainer = root / "scripts/finetune.py"
@@ -125,6 +149,8 @@ def main(args: argparse.Namespace) -> None:
         f"model.lr_min_ratio={lr_min_ratio:.12g}",
         f"model.constant_end_ratio={args.decay_start_ratio}",
         f"model.weight_decay={args.weight_decay}",
+        f"seed={seed}",
+        *_memory_overrides(args),
         f"model.model_arch.hf_processor_path={processor}",
         f"tokenizer.vq_config.ckpt_dir={tokenizer}",
         f"checkpointing_steps={args.save_interval}",
@@ -139,6 +165,10 @@ def main(args: argparse.Namespace) -> None:
     environment.update(
         {
             "ROBODOJO_RECAP_DATASET": str(dataset),
+            "ROBODOJO_G05_DEMO_SAMPLING_WEIGHT": str(demo_weight),
+            "ROBODOJO_G05_ROLLOUT_SAMPLING_WEIGHT": str(rollout_weight),
+            "ROBODOJO_G05_SAMPLING_SEED": str(seed),
+            "ROBODOJO_G05_SAMPLING_REPORT": str(output / "recap_source_sampling.json"),
             "ROBODOJO_G05_DATA_STATS": str(stats),
             "ROBODOJO_G05_FINETUNE_SCRIPT": str(trainer),
             "ROBODOJO_G05_MAX_GETITEM_ATTEMPTS": "1",
@@ -168,6 +198,19 @@ def main(args: argparse.Namespace) -> None:
                     "decay_learning_rate": args.decay_learning_rate,
                     "decay_start_ratio": args.decay_start_ratio,
                     "scheduler": "warmup_constant_cosine",
+                    "use_8bit": args.use_8bit_optimizer,
+                },
+                "memory": {
+                    "model_weights_to_bf16": args.model_weights_to_bf16,
+                    "activation_checkpointing": {
+                        "vision": args.checkpoint_vision,
+                        "vlm": args.checkpoint_vlm,
+                        "action_expert": args.checkpoint_action_expert,
+                    },
+                },
+                "recap_sampling": {
+                    "demonstrations": demo_weight,
+                    "rollouts": rollout_weight,
                 },
             },
             indent=2,
@@ -198,7 +241,35 @@ if __name__ == "__main__":
     parser.add_argument("--warmup-steps", type=int, required=True)
     parser.add_argument("--decay-learning-rate", type=float, required=True)
     parser.add_argument("--decay-start-ratio", type=float, required=True)
+    parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--weight-decay", type=float, required=True)
+    parser.add_argument("--recap-demo-weight", type=float, default=1.0)
+    parser.add_argument("--recap-rollout-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--model-weights-to-bf16",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--use-8bit-optimizer",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--checkpoint-vision",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--checkpoint-vlm",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--checkpoint-action-expert",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--wandb", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")

@@ -101,6 +101,9 @@ def _install_worker(args: argparse.Namespace) -> str:
     local_g05_preparer = Path(__file__).with_name(
         "prepare_g05_inference_checkpoint.py"
     ).resolve()
+    local_value_renderer = Path(__file__).with_name(
+        "render_rollout_value_videos.py"
+    ).resolve()
     remote_bin = f"{args.remote_work_root}/bin"
     remote_worker = f"{remote_bin}/remote_recap_worker.sh"
     _remote(args, ["mkdir", "-p", remote_bin])
@@ -108,6 +111,7 @@ def _install_worker(args: argparse.Namespace) -> str:
         (local_worker, remote_worker),
         (local_reservation, f"{remote_bin}/reserve_gpu_memory.py"),
         (local_g05_preparer, f"{remote_bin}/prepare_g05_inference_checkpoint.py"),
+        (local_value_renderer, f"{remote_bin}/render_rollout_value_videos.py"),
     ):
         temporary = f"{remote_path}.tmp-{os.getpid()}"
         _scp(args, str(local_path), f"{args.host}:{temporary}")
@@ -511,6 +515,7 @@ def rollout(args: argparse.Namespace) -> None:
                 "RECAP_REMOTE_RESULT_ARCHIVE": result,
                 "RECAP_REMOTE_TASK": args.task,
                 "RECAP_REMOTE_EPISODES": str(args.episodes),
+                "RECAP_REMOTE_MAX_STEPS": str(args.max_steps),
                 "RECAP_REMOTE_LAYOUT_SEED": str(args.layout_seed),
                 "RECAP_REMOTE_LAYOUT_OFFSET": str(args.layout_offset),
                 "RECAP_REMOTE_POLICY_GPU": str(args.policy_gpu),
@@ -658,6 +663,7 @@ def main() -> None:
     rollout_parser.add_argument("--output", required=True)
     rollout_parser.add_argument("--task", required=True)
     rollout_parser.add_argument("--episodes", type=int, required=True)
+    rollout_parser.add_argument("--max-steps", type=int, required=True)
     rollout_parser.add_argument("--layout-seed", type=int, required=True)
     rollout_parser.add_argument("--layout-offset", type=int, default=0)
     rollout_parser.add_argument("--policy-gpu", type=int, required=True)
@@ -689,6 +695,8 @@ def main() -> None:
     cancel_parser.add_argument("--job-id", required=True)
     cancel_parser.set_defaults(function=cancel)
     arguments = parser.parse_args()
+    if arguments.action == "rollout" and arguments.max_steps < 1:
+        parser.error("--max-steps must be a positive integer")
     if arguments.gpu_reservation_leave_free_mib < 256:
         parser.error("--gpu-reservation-leave-free-mib must be at least 256")
     if arguments.gpu_reservation_idle_used_max_mib < 0:

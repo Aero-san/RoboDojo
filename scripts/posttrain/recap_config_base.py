@@ -70,6 +70,7 @@ FIELDS: dict[str, Field] = {
     "training.remote.value_video_gpu": Field("RECAP_TRAINING_REMOTE_VALUE_VIDEO_GPU", "int", 0, minimum=0),
     "training.remote.render_value_video": Field("RECAP_TRAINING_REMOTE_RENDER_VALUE_VIDEO", "bool", True),
     "rollout.episodes": Field("RECAP_ROLLOUT_EPISODES", "int", 100, minimum=1),
+    "rollout.max_steps": Field("RECAP_ROLLOUT_MAX_STEPS", "int", 40, minimum=1),
     "rollout.layout_seed": Field("RECAP_ROLLOUT_LAYOUT_SEED", "int", 0, minimum=0),
     "rollout.minimum.total": Field("RECAP_MIN_ROLLOUT_EPISODES", "int", 50, minimum=1),
     "rollout.minimum.successes": Field("RECAP_MIN_SUCCESS_EPISODES", "int", 5, minimum=0),

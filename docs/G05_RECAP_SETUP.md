@@ -155,6 +155,8 @@ environment:
   policy_env: /share/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv
 
 rollout:
+  # Maximum deployed policy actions in every rollout/evaluation episode.
+  max_steps: 40
   remote:
     enabled: true
     host: XYZ4090
@@ -172,6 +174,8 @@ runtime:
   policy_python: /mnt/cpfs-E/mingyang/RoboDojo/XPolicyLab/policy/G05/GalaxeaVLA/.venv/bin/python
 ```
 
+`rollout.max_steps` overrides the task's built-in episode limit for both local
+and remote RECAP rollout/evaluation. It defaults to `40` and must be positive.
 `environment.eval_env` remains the RoboDojo Conda environment. Do not point it
 to the G05 `.venv`.
 

@@ -392,7 +392,8 @@ case "${RECAP_REMOTE_ACTION}" in
   rollout)
     required=(
       RECAP_REMOTE_CHECKPOINT_ARCHIVE RECAP_REMOTE_RESULT_ARCHIVE
-      RECAP_REMOTE_TASK RECAP_REMOTE_EPISODES RECAP_REMOTE_LAYOUT_SEED
+      RECAP_REMOTE_TASK RECAP_REMOTE_EPISODES RECAP_REMOTE_MAX_STEPS
+      RECAP_REMOTE_LAYOUT_SEED
       RECAP_REMOTE_POLICY_GPU RECAP_REMOTE_ENV_GPU RECAP_REMOTE_ENV_CFG
       RECAP_REMOTE_ACTION_TYPE RECAP_REMOTE_POLICY_ENV RECAP_REMOTE_EVAL_ENV
       RECAP_REMOTE_POLICY
@@ -473,6 +474,7 @@ case "${RECAP_REMOTE_ACTION}" in
           --policy-env "${RECAP_REMOTE_POLICY_ENV}" \
           --eval-env "${RECAP_REMOTE_EVAL_ENV}" \
           --eval-num "${remaining}" \
+          --max-steps "${RECAP_REMOTE_MAX_STEPS}" \
           --rollout-dir "${rollout_dir}" \
           --no-video >"${log}" 2>&1 || {
             tail -n 100 "${log}" >&2 || true
@@ -562,7 +564,7 @@ case "${RECAP_REMOTE_ACTION}" in
     value_log="${RECAP_REMOTE_JOB_ROOT}/value_video.log"
     CUDA_VISIBLE_DEVICES="${RECAP_REMOTE_VALUE_GPU}" \
       "${RECAP_REMOTE_REPO_ROOT}/external_dependencies/WCM/.venv/bin/python" \
-        "${RECAP_REMOTE_REPO_ROOT}/scripts/posttrain/render_rollout_value_videos.py" \
+        "${worker_bin}/render_rollout_value_videos.py" \
           --wcm-checkpoint "${wcm_checkpoint}" \
           --rollout-root "${rollout_dir}" \
           --output-dir "${value_dir}" \

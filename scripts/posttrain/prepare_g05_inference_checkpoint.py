@@ -13,6 +13,7 @@ import yaml
 _TRAINING_ONLY_LOGGER_KEYS = ("dir", "project", "workspace")
 _TRAINING_ONLY_DATA_KEYS = frozenset({"dataset_dirs", "dataset_groups"})
 _REMOTE_HF_PROCESSOR_PATH = "${oc.env:G05_HF_PROCESSOR_PATH}"
+_REMOTE_ACTION_TOKENIZER_PATH = "${oc.env:G05_ACTION_TOKENIZER_PATH}"
 
 
 def _strip_training_data_locations(
@@ -47,7 +48,7 @@ def _materialize_action_tokenizer_config(
     *,
     changes: list[str],
 ) -> None:
-    """Detach AT_CONFIG from its interpolation before sidecar path patching."""
+    """Detach tokenizer interpolations and use the worker-provided sidecar."""
 
     model = payload.get("model")
     if not isinstance(model, dict):
@@ -68,16 +69,24 @@ def _materialize_action_tokenizer_config(
     if not isinstance(tokenizer_target, str) or not tokenizer_target:
         raise ValueError("G05 checkpoint tokenizer has no _target_.")
 
+    if vq_config.get("ckpt_dir") != _REMOTE_ACTION_TOKENIZER_PATH:
+        vq_config["ckpt_dir"] = _REMOTE_ACTION_TOKENIZER_PATH
+        changes.append("portable:tokenizer.vq_config.ckpt_dir")
+
     if model_arch.get("action_tokenizer") != tokenizer_target:
         model_arch["action_tokenizer"] = tokenizer_target
         changes.append("materialized:model.model_arch.action_tokenizer")
 
     current = model_arch.get("AT_CONFIG")
     if isinstance(current, dict) and current.get("vqvae_type"):
+        if current.get("ckpt_dir") != _REMOTE_ACTION_TOKENIZER_PATH:
+            current["ckpt_dir"] = _REMOTE_ACTION_TOKENIZER_PATH
+            changes.append("portable:model.model_arch.AT_CONFIG.ckpt_dir")
         return
     materialized = deepcopy(vq_config)
     if isinstance(current, dict):
         materialized.update(current)
+    materialized["ckpt_dir"] = _REMOTE_ACTION_TOKENIZER_PATH
     model_arch["AT_CONFIG"] = materialized
     changes.append("materialized:model.model_arch.AT_CONFIG")
 

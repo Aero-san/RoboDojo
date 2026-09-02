@@ -177,12 +177,15 @@ trainer launch, checkpoint packaging, and candidate discovery are adapters.
 
 ### Data formats
 
-`data.format` is mandatory and must match `meta/info.json`. External LeRobot
-v2.1 and v3.0 layouts have separate readers and there is no fallback between
-them. Sources are normalized into an explicitly marked internal v2.1 replay
-layout for WCM. The policy materializer writes LeRobot v3.0, which is consumed
-by G05 through `BaseLerobotDatasetV3`. G05 configurations reject any source
-format other than v3.0.
+`data.format` selects exactly one source reader; readers never fall back across
+formats. External LeRobot v2.1/v3.0 sources must match their `meta/info.json`.
+`hdf5` reads RoboDojo trajectory files named `episode_*.hdf5` or
+`episode_*.h5`, including their embedded camera streams. Sources are normalized
+into an explicitly marked internal v2.1 replay layout for WCM. The policy
+materializer then writes LeRobot v3.0, which is consumed by G05 through
+`BaseLerobotDatasetV3`. Consequently, a remote G05 trainer receives the
+normalized v3.0 policy dataset and does not need access to the original HDF5
+tree.
 
 The policy dataset is incremental: existing packed videos are hard-linked,
 only new rollout episodes are encoded, and task indices are rewritten from the
@@ -206,12 +209,16 @@ bash scripts/posttrain/run_recap.sh \
 bash scripts/posttrain/run_recap.sh \
   --config configs/posttrain/g05_recap.yaml.example
 
+# G05 with RoboDojo HDF5 demonstrations
+RECAP_CONFIG=configs/posttrain/g05_hdf5_remote.yaml bash remote_training.sh
+
 # Active remote G05 configuration
 bash remote_training.sh
 ```
 
-See [pi05_recap.yaml.example](../configs/posttrain/pi05_recap.yaml.example) and
-[g05_recap.yaml.example](../configs/posttrain/g05_recap.yaml.example). The
+See [pi05_recap.yaml.example](../configs/posttrain/pi05_recap.yaml.example),
+[g05_recap.yaml.example](../configs/posttrain/g05_recap.yaml.example), and
+[g05_hdf5_remote.yaml](../configs/posttrain/g05_hdf5_remote.yaml). The
 repository default [remote_training.yaml](../configs/posttrain/remote_training.yaml)
 selects G05, `data/pickup_video`, LeRobot v3.0, remote rollout, and remote G05
 training. `remote_training.sh` uses the RoboDojo conda environment only for
@@ -224,6 +231,13 @@ Hydra overlays under `configs/g05/`. A G05 bundle contains `.hydra/config.yaml`,
 and tokenizer assets are frozen from the initial bundle for the complete RECAP
 run. G05 currently requires joint actions, FM output, equal demonstration and
 rollout sampling weights, and `recap.guidance_scale: 1.0`.
+
+GalaxeaVLA currently wraps the model with DDP, so every rank keeps a complete
+model and optimizer replica; the upstream use_fsdp task keys are not consumed
+by its trainer. RECAP therefore exposes only the native, working controls below
+g05.memory: BF16 model weights, bitsandbytes 8-bit AdamW, and independent
+vision/VLM/action-expert activation checkpointing. Keep use_8bit_optimizer
+unchanged when resuming a partial optimizer checkpoint.
 
 ### Remote execution and resume
 

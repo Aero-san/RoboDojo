@@ -301,6 +301,15 @@ def filter_episode_metadata(
     if selector is None or not selector.strip():
         return episodes, None
     requested = selector.strip()
+    requested_slug = _task_slug(requested).removesuffix("_random")
+    selected_by_slug = [
+        episode
+        for episode in episodes
+        if _task_slug(str(episode.get("task_slug", ""))).removesuffix("_random")
+        == requested_slug
+    ]
+    if selected_by_slug:
+        return selected_by_slug, requested
     task_map = {
         int(row["task_index"]): str(row.get("task", row.get("instruction", ""))).strip()
         for row in (task_metadata or [])

@@ -116,7 +116,14 @@ def main(args: argparse.Namespace) -> None:
             )
             total_videos += 1
 
-        output_episodes.append({"episode_index": output_episode, "tasks": [task], "length": length})
+        output_episode_metadata = {
+            "episode_index": output_episode,
+            "tasks": [task],
+            "length": length,
+        }
+        if metadata.get("task_slug"):
+            output_episode_metadata["task_slug"] = str(metadata["task_slug"])
+        output_episodes.append(output_episode_metadata)
         output_labels[str(output_episode)] = labels[source_episode]
         source_provenance = dict(provenance[source_episode])
         source_provenance.update(

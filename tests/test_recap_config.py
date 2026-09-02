@@ -11,6 +11,7 @@ from scripts.posttrain.recap_config import resolve
 
 ROOT = Path(__file__).resolve().parents[1]
 G05_EXAMPLE = ROOT / "configs/posttrain/g05_recap.yaml.example"
+G05_HDF5_EXAMPLE = ROOT / "configs/posttrain/g05_hdf5_remote.yaml"
 EXAMPLE = ROOT / "configs/posttrain/pi05_recap.yaml.example"
 
 
@@ -26,6 +27,14 @@ class RecapConfigTest(unittest.TestCase):
         self.assertEqual(resolved["pi05"]["parameter_dtype"], "bfloat16")
         self.assertEqual(environment["OPENPI_SHARDING_STRATEGY"], "full_shard")
         self.assertEqual(environment["TRAIN_GPUS"], "0,1,2,3")
+        self.assertEqual(resolved["rollout"]["max_steps"], 40)
+        self.assertEqual(environment["RECAP_ROLLOUT_MAX_STEPS"], "40")
+
+    def test_rollout_max_steps_must_be_positive(self):
+        payload = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
+        payload["rollout"]["max_steps"] = 0
+        with self.assertRaisesRegex(ValueError, "rollout.max_steps"):
+            self._resolve_payload(payload)
 
     def test_unknown_field_is_rejected(self):
         payload = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
@@ -121,6 +130,11 @@ class RecapConfigTest(unittest.TestCase):
         self.assertEqual(environment["RECAP_TRAINING_REMOTE_POLICY_GPUS"], "0,1,2,3")
         self.assertEqual(environment["G05_DECAY_LEARNING_RATE"], "1e-06")
         self.assertEqual(environment["G05_DECAY_START_RATIO"], "0.5")
+        self.assertEqual(environment["G05_MODEL_WEIGHTS_TO_BF16"], "0")
+        self.assertEqual(environment["G05_USE_8BIT_OPTIMIZER"], "0")
+        self.assertEqual(environment["G05_CHECKPOINT_VISION"], "1")
+        self.assertEqual(environment["G05_CHECKPOINT_VLM"], "1")
+        self.assertEqual(environment["G05_CHECKPOINT_ACTION_EXPERT"], "1")
         self.assertEqual(
             environment["RECAP_REMOTE_G05_PROCESSOR_PATH"],
             "/absolute/path/to/GalaxeaVLA/checkpoints/qwen3_5_2b_base_processor",
@@ -149,8 +163,17 @@ class RecapConfigTest(unittest.TestCase):
     def test_g05_rejects_v21_input(self):
         payload = yaml.safe_load(G05_EXAMPLE.read_text(encoding="utf-8"))
         payload["data"]["format"] = "v2.1"
-        with self.assertRaisesRegex(ValueError, "requires data.format: v3.0"):
+        with self.assertRaisesRegex(ValueError, "v3.0 or hdf5"):
             self._resolve_payload(payload)
+
+    def test_g05_hdf5_example_selects_hdf5_adapter(self):
+        resolved, environment = resolve(G05_HDF5_EXAMPLE)
+
+        self.assertEqual(resolved["policy"]["name"], "g05")
+        self.assertEqual(resolved["run"]["task"], "pour_by_language")
+        self.assertEqual(resolved["data"]["format"], "hdf5")
+        self.assertEqual(environment["RECAP_DEMO_FORMAT"], "hdf5")
+        self.assertEqual(environment["DEMO_ROOT"], "data/RoboDojo")
 
     def test_g05_rejects_ar_action_source(self):
         payload = yaml.safe_load(G05_EXAMPLE.read_text(encoding="utf-8"))

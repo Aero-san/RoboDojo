@@ -38,8 +38,21 @@ def _check_buffer(path: Path) -> bool:
     if (path / "meta/.incremental_update_in_progress").exists():
         return False
     info = _json(path / "meta/info.json")
-    episodes = [line for line in (path / "meta/episodes.jsonl").read_text().splitlines() if line.strip()]
-    return int(info.get("total_episodes", -1)) == len(episodes) > 0
+    try:
+        episodes = [
+            json.loads(line)
+            for line in (path / "meta/episodes.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+    except (json.JSONDecodeError, TypeError):
+        return False
+    summary = _json(path / "meta/replay_buffer.json")
+    task = str(summary.get("task", "")).strip()
+    return (
+        int(info.get("total_episodes", -1)) == len(episodes) > 0
+        and bool(task)
+        and all(episode.get("task_slug") == task for episode in episodes)
+    )
 
 
 def _check_advantages(path: Path, expected: int) -> bool:
@@ -140,6 +153,42 @@ def _check_rollout(path: Path, expected: int) -> bool:
     return True
 
 
+def _check_value_videos(path: Path, expected: int) -> bool:
+    summary_path = path / "summary.json"
+    curves_path = path / "episode_curves.json"
+    if not summary_path.is_file() or not curves_path.is_file():
+        return False
+    try:
+        summary = _json(summary_path)
+        curves = _json(curves_path)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    if not isinstance(summary, dict) or not isinstance(curves, list):
+        return False
+    episodes = summary.get("episodes")
+    if not isinstance(episodes, list):
+        return False
+    if expected > 0 and (len(episodes) != expected or len(curves) != expected):
+        return False
+    summary_instructions = {
+        int(episode["episode_id"]): str(episode.get("instruction", "")).strip()
+        for episode in episodes
+        if isinstance(episode, dict) and "episode_id" in episode
+    }
+    curve_instructions = {
+        int(curve["episode_id"]): str(curve.get("instruction", "")).strip()
+        for curve in curves
+        if isinstance(curve, dict) and "episode_id" in curve
+    }
+    return (
+        len(summary_instructions) == len(episodes)
+        and len(curve_instructions) == len(curves)
+        and all(summary_instructions.values())
+        and summary_instructions == curve_instructions
+        and len(list((path / "videos").glob("episode-*.mp4"))) == expected
+    )
+
+
 def _state_path(path: Path) -> Path:
     if path.is_dir() or not path.suffix:
         return path / ".recap_stage.json"
@@ -186,10 +235,7 @@ def check(stage: str, path: Path, expected: int, fingerprint: str = "", policy: 
     if stage == "rollout":
         return _check_rollout(path, expected)
     if stage == "value_videos":
-        return (
-            (path / "summary.json").is_file()
-            and len(list((path / "videos").glob("episode-*.mp4"))) == expected
-        )
+        return _check_value_videos(path, expected)
     raise ValueError(f"Unknown stage: {stage}")
 
 
@@ -569,6 +615,9 @@ def main(args: argparse.Namespace) -> None:
     if args.command == "finalize-iteration":
         finalize_iteration(Path(args.run_root), Path(args.iteration_root))
         return
+    if args.command == "iteration-complete":
+        _validate_completed_iteration(Path(args.iteration_root).expanduser().resolve())
+        return
     if args.command == "selected-checkpoint":
         iteration_root = Path(args.iteration_root).expanduser().resolve()
         selection = _json(iteration_root / "selection.json")
@@ -614,6 +663,8 @@ if __name__ == "__main__":
     finalizer = subparsers.add_parser("finalize-iteration")
     finalizer.add_argument("--run-root", required=True)
     finalizer.add_argument("--iteration-root", required=True)
+    iteration_checker = subparsers.add_parser("iteration-complete")
+    iteration_checker.add_argument("--iteration-root", required=True)
     selector = subparsers.add_parser("selected-checkpoint")
     selector.add_argument("--iteration-root", required=True)
     main(parser.parse_args())

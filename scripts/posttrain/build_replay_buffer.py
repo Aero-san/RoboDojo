@@ -114,7 +114,7 @@ def _episode_table(
     )
 
 
-def _demo_records(
+def _lerobot_demo_records(
     root: Path, task: str, max_episodes: int, data_format: str
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     layout = LeRobotLayout(root, data_format)
@@ -138,6 +138,7 @@ def _demo_records(
                 "source": str(root),
                 "source_episode": episode,
                 "task": str(metadata["tasks"][0]),
+                "task_slug": task,
                 "success": True,
                 "score": 1.0,
                 "fps": float(info.get("fps", 25)),
@@ -150,6 +151,21 @@ def _demo_records(
             }
         )
     return info, records
+
+
+def _demo_records(
+    root: Path, task: str, max_episodes: int, data_format: str
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if data_format == "hdf5":
+        try:
+            from hdf5_io import Hdf5DemoSource
+        except ModuleNotFoundError:
+            from scripts.posttrain.hdf5_io import Hdf5DemoSource
+
+        return Hdf5DemoSource(root, task).load(max_episodes)
+    if data_format in {"v2.1", "v3.0"}:
+        return _lerobot_demo_records(root, task, max_episodes, data_format)
+    raise ValueError(f"Unsupported demonstration format: {data_format}")
 
 
 def _rollout_records(root: Path, task: str, max_episodes: int, seed: int) -> list[dict[str, Any]]:
@@ -188,6 +204,7 @@ def _rollout_records(root: Path, task: str, max_episodes: int, seed: int) -> lis
                 "source_episode": int(manifest["episode_index"]),
                 "run_id": str(manifest.get("run_id", "")),
                 "task": str(manifest["task"]),
+                "task_slug": task,
                 "success": bool(manifest["success"]),
                 "score": float(manifest.get("score", float(manifest["success"]))),
                 "fps": float(manifest["fps"]),
@@ -200,6 +217,16 @@ def _rollout_records(root: Path, task: str, max_episodes: int, seed: int) -> lis
     if max_episodes > 0 and len(records) > max_episodes:
         records = random.Random(seed).sample(records, max_episodes)
     return records
+
+
+def _materialize_video(source: Any, destination: Path, fps: float) -> None:
+    if isinstance(source, str | os.PathLike):
+        _link(Path(source), destination)
+        return
+    materialize = getattr(source, "materialize", None)
+    if not callable(materialize):
+        raise TypeError(f"Unsupported replay video source: {type(source).__name__}")
+    materialize(destination, fps)
 
 
 def main(args: argparse.Namespace) -> None:
@@ -266,10 +293,17 @@ def main(args: argparse.Namespace) -> None:
                 output
                 / f"videos/chunk-{chunk:03d}/observation.images.{camera}/episode_{episode_index:06d}.mp4"
             )
-            _link(Path(source), destination)
+            _materialize_video(source, destination, float(record["fps"]))
             total_videos += 1
         length = len(record["actions"])
-        episodes_meta.append({"episode_index": episode_index, "tasks": [record["task"]], "length": length})
+        episode_meta = {
+            "episode_index": episode_index,
+            "tasks": [record["task"]],
+            "length": length,
+        }
+        if record.get("task_slug"):
+            episode_meta["task_slug"] = str(record["task_slug"])
+        episodes_meta.append(episode_meta)
         labels[str(episode_index)] = bool(record["success"])
         provenance.append(
             {
@@ -345,10 +379,10 @@ def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--demo-root", required=True)
-    parser.add_argument("--demo-format", choices=("v2.1", "v3.0"), required=True)
+    parser.add_argument("--demo-format", choices=("v2.1", "v3.0", "hdf5"), required=True)
     parser.add_argument("--rollout-root", action="append", default=[])
     parser.add_argument("--output", required=True)
-    parser.add_argument("--task", default="")
+    parser.add_argument("--task", required=True)
     parser.add_argument("--max-demo-episodes", type=int, default=0)
     parser.add_argument("--max-rollout-episodes", type=int, default=0)
     parser.add_argument("--chunk-size", type=int, default=1000)

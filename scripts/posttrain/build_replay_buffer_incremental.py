@@ -38,6 +38,13 @@ def _write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
+def _normalize_task_slugs(episodes: list[dict], task: str) -> None:
+    if not task.strip():
+        raise ValueError("--task is required for a single-task RECAP replay buffer.")
+    for episode in episodes:
+        episode["task_slug"] = task
+
+
 def main(args: argparse.Namespace) -> None:
     previous = Path(args.previous_buffer).expanduser().resolve()
     output = Path(args.output).expanduser().resolve()
@@ -46,6 +53,7 @@ def main(args: argparse.Namespace) -> None:
         raise FileExistsError(f"Replay buffer output already exists: {output}")
     info = replay._json(previous / "meta/info.json")
     episodes = replay._jsonl(previous / "meta/episodes.jsonl")
+    _normalize_task_slugs(episodes, args.task)
     provenance = replay._jsonl(previous / "meta/provenance.jsonl")
     labels = {str(key): bool(value) for key, value in replay._json(previous / "meta/success_labels.json").items()}
     task_rows = replay._jsonl(previous / "meta/tasks.jsonl")
@@ -112,7 +120,14 @@ def main(args: argparse.Namespace) -> None:
                 / f"videos/chunk-{chunk:03d}/observation.images.{camera}/episode_{episode_index:06d}.mp4",
             )
         length = len(record["actions"])
-        episodes.append({"episode_index": episode_index, "tasks": [record["task"]], "length": length})
+        episode_meta = {
+            "episode_index": episode_index,
+            "tasks": [record["task"]],
+            "length": length,
+        }
+        if record.get("task_slug"):
+            episode_meta["task_slug"] = str(record["task_slug"])
+        episodes.append(episode_meta)
         labels[str(episode_index)] = bool(record["success"])
         provenance.append(
             {
@@ -177,7 +192,7 @@ if __name__ == "__main__":
     parser.add_argument("--previous-buffer", required=True)
     parser.add_argument("--rollout-root", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--task", default="")
+    parser.add_argument("--task", required=True)
     parser.add_argument("--max-rollout-episodes", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     main(parser.parse_args())

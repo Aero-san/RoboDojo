@@ -1,6 +1,7 @@
 _target_: g05.data.mixture_lerobot_dataset.MixtureLerobotDataset
 use_weight_normalization: true
-use_weight_for_sampling: false
+# G05 source balancing is installed by the RoboDojo training entrypoint; this flag only affects dataset groups.
+use_weight_for_sampling: true
 action_size: 32
 past_action_size: 0
 obs_size: 1
