@@ -1,29 +1,56 @@
-# 使用 Codex 从零迁移和恢复 RoboDojo
+# 使用 Codex 迁移和恢复 RoboDojo
 
-本文档用于把当前 RoboDojo 工作区（包括本地 Git 历史、XPolicyLab 修改、
-Assets、checkpoints、训练数据和结果）迁移到另一台 Linux 机器。官方安装页仍是
-环境和硬件要求的上游参考：
+本文档用于把 RoboDojo 工作区迁移到另一台 Linux 机器。RoboDojo 现在是单一
+Git 仓库：`XPolicyLab`、IsaacLab、CuRobo、WCM 和 G05 GalaxeaVLA 的源码都已经
+作为普通文件纳入主仓库。源码迁移只需要 Git；Assets、checkpoints、训练数据和
+运行结果仍然按机器单独迁移。
+
+官方安装页仍是环境和硬件要求的上游参考：
 <https://robodojo-benchmark.com/doc/usage/install-and-download/>。
 
 ## 迁移包包含什么
 
-`scripts/migration/create_bundle.sh` 默认在 `migration_bundle/` 中生成：
+升级后的 `scripts/migration/create_bundle.sh` 默认在 `migration_bundle/` 中生成：
 
-- RoboDojo 和全部已初始化 submodule 的 Git bundle；
-- 每个仓库的未提交二进制 patch，以及未被 Git 忽略的 untracked 文件；
+- RoboDojo 单一 Git bundle，以及当前工作区的未提交二进制 patch；
+- 当前工作区未被 Git 忽略的 untracked 文件；
 - `Assets/`；
 - `XPolicyLab/policy/Pi_05/checkpoints/`；
 - `data/`、`outputs/`、`eval_result/`、`wandb/` 和 `smoke_results/`；
-- 环境元数据和覆盖全部文件的 `SHA256SUMS`。
+- 环境元数据和覆盖归档、Git bundle、patch 的 `SHA256SUMS`。
 
-Python 虚拟环境和缓存不会被打包：根目录 `.venv/`、OpenPI `.venv/`、WCM
+不会打包 Python 虚拟环境和缓存：根目录 `.venv/`、OpenPI `.venv/`、WCM
 `.venv/` 和 `.cache/` 都与机器路径、CUDA 和系统库绑定，应在新机器重新安装。
 
-当前数据的未压缩体积约为：Assets 39 GiB、Pi_05 checkpoints 189 GiB、data
-60 GiB、outputs 111 GiB、eval_result 28 GiB。请为源机器的归档和目标机器的
-解压分别预留足够空间。
+## 1. 优先使用 Git 同步源码
 
-## 1. 在源机器创建迁移包
+完成这次转换后，在源机器提交并推送 RoboDojo 改动：
+
+```bash
+git add -A
+git commit -m "[scripts] refactor: vendor project dependencies"
+git push origin main
+```
+
+目标机器可以直接获得完整源码：
+
+```bash
+git clone <RoboDojo-repository-url> /data/work/RoboDojo
+cd /data/work/RoboDojo
+git pull --ff-only
+```
+
+不需要 `git submodule init`、`git submodule update` 或额外的 XPolicyLab/WCM
+仓库。后续对这些目录的代码修改也直接在 RoboDojo 中提交和同步。各源码快照的
+来源和 commit 记录在 [`VENDORED_SOURCES.md`](VENDORED_SOURCES.md)。
+
+如果目标机器已有旧版 submodule 工作区，推荐在备份本地修改、checkpoint、数据
+和 Assets 后新建一个 clone，再把这些机器本地目录挂载或复制过去。若必须复用旧
+目录，先备份所有非 Git 文件和本地改动，再执行旧版本的
+`git submodule deinit -f --all`，最后 `git pull --ff-only`；不要在未备份数据时
+强制清理旧 submodule 工作树。
+
+## 2. 在源机器创建离线迁移包
 
 确保没有训练或评测进程仍在写 checkpoints、data、outputs 或 eval_result，避免
 得到跨时间点的不一致快照，然后执行：
@@ -36,7 +63,7 @@ sha256sum -c SHA256SUMS
 ```
 
 脚本不移动、不删除原文件。若中途中断，再次运行同一命令会保留已完成的归档并
-继续缺失部分。只想先测试 Git/源码恢复流程时可使用：
+继续缺失部分。只想先测试单一 Git 仓库恢复流程时可使用：
 
 ```bash
 bash scripts/migration/create_bundle.sh --skip-large-data
@@ -50,10 +77,10 @@ rsync -aH --info=progress2 migration_bundle/ user@new-host:/data/robodojo-migrat
 
 传输后必须在目标机再次运行 `sha256sum -c SHA256SUMS`。
 
-## 2. 在目标机器离线恢复源码和大文件
+## 3. 在目标机器离线恢复源码和大文件
 
-目标机需要先安装 `git`、`git-lfs`、`tar`、`zstd`、`rsync` 和 NVIDIA 驱动。
-在迁移包目录执行：
+目标机需要先安装 `git`、`git-lfs`、`tar`、`zstd`、`rsync` 和 NVIDIA 驱动。在
+迁移包目录执行：
 
 ```bash
 cd /data/robodojo-migration
@@ -61,20 +88,22 @@ bash restore.sh /data/work/RoboDojo
 cd /data/work/RoboDojo
 ```
 
-`restore.sh` 会从离线 Git bundle 克隆主仓库和 submodule，恢复未提交修改，然后
-解压全部大文件。它要求目标目录不存在，以避免覆盖已有工作区。
+`restore.sh` 只从 RoboDojo 的离线 Git bundle 克隆一个仓库，恢复主仓库工作区
+patch，然后解压大文件归档；不会访问或初始化任何 submodule。它要求目标目录不
+存在，以避免覆盖已有工作区。
 
-## 3. 让 Codex 完成机器相关安装
+## 4. 让 Codex 完成机器相关安装
 
 在目标机启动 Codex，打开恢复后的仓库并发送下面的提示词：
 
 ```text
-请阅读 AGENTS.md 和 docs/MIGRATION_WITH_CODEX.md。这个仓库是从迁移包恢复的。
-请先只做只读检查：核对 GPU/驱动、磁盘、Git/submodule、Assets、checkpoints 和
-SHA-256 结果；然后运行官方本地安装流程，重建 RoboDojo conda 环境、Pi_05 的
-OpenPI uv 环境和需要的 WCM 环境。不要下载或覆盖迁移包中已经恢复的大文件。
-安装后重写 Assets 中与旧机器绑定的绝对路径，运行 doctor、任务 inventory、
-ruff、git diff --check 和 dry-run eval/smoke，并汇报所有未通过项。任何需要 sudo、
+请阅读 AGENTS.md 和 docs/MIGRATION_WITH_CODEX.md。这个仓库是 RoboDojo 单一仓库。
+请先只做只读检查：核对 GPU/驱动、磁盘、Git、Assets、checkpoints 和 SHA-256
+结果；然后运行官方本地安装流程，重建 RoboDojo conda 环境、Pi_05 的 OpenPI
+uv 环境和需要的 WCM 环境。不要下载或覆盖迁移包中已经恢复的大文件。安装后
+重写 Assets 中与旧机器绑定的绝对路径，运行 doctor、任务 inventory、ruff、
+Git 差异检查和 dry-run eval/smoke，并汇报所有未通过项。vendored 上游源码的
+差异检查请排除；任何需要 sudo、
 联网下载或可能覆盖数据的步骤先请求我的批准。
 ```
 
@@ -101,50 +130,22 @@ CuRobo 由 `scripts/install.sh` 分阶段安装；Pi_05 使用
 `pyproject.toml`。不要用当前机器的 `pip freeze` 覆盖这些分层依赖，因为其中会
 混入 editable 路径、GPU wheel 和机器相关包。
 
-## 4. XPolicyLab submodule 的正确工作流
-
-XPolicyLab 已经是 submodule。父仓库索引只保存一个 gitlink，因此内部文件修改在
-父仓库里只显示为 `m XPolicyLab`，这是正常行为。当前迁移分支是
-`mingyang/robodojo-migration`；迁移包同时保存该分支、本地提交、未提交 patch 和
-untracked 源文件。
-
-恢复后先检查：
-
-```bash
-git ls-files --stage XPolicyLab       # 第一列应为 160000
-git -C XPolicyLab status --short --branch
-git submodule status
-```
-
-确认未提交文件内容后，在子模块内部提交并推送，然后在父仓库更新 gitlink：
-
-```bash
-git -C XPolicyLab add <确认要保存的文件>
-git -C XPolicyLab commit -m "[Pi_05] feat: describe local changes"
-git -C XPolicyLab push -u origin mingyang/robodojo-migration
-
-git add XPolicyLab
-git commit -m "[scripts] update: pin XPolicyLab migration changes"
-git push
-```
-
-不要在父仓库直接 `git add XPolicyLab/<file>`；父仓库不会逐文件追踪 submodule。
-安装脚本也不再使用 `git submodule update --remote`，而是严格恢复父仓库记录的提交，
-避免本地/固定版本被远端 `main` 意外替换。
-
-## 5. 验证恢复结果
+## 5. 验证单仓库恢复结果
 
 先运行不需要 Isaac/policy server 的检查：
 
 ```bash
-git submodule status
+git ls-files --stage | awk '$1 == "160000" {print}'   # 应无输出
+find XPolicyLab third_party external_dependencies \
+  \( -name .git -o -name .gitmodules \) -print       # 应无输出
 bash -n scripts/install.sh scripts/init_assets.sh scripts/robodojo.sh \
   scripts/eval_policy.sh scripts/migration/create_bundle.sh \
   scripts/migration/restore_bundle.sh
 python scripts/internal/task_inventory.py --format json --check
 bash scripts/robodojo.sh doctor --skip-isaac --skip-conda --skip-policy
 ruff check .
-git diff --check
+git diff --check -- . ':!XPolicyLab' ':!third_party' ':!external_dependencies'
+git diff --cached --check -- . ':!XPolicyLab' ':!third_party' ':!external_dependencies'
 ```
 
 然后用真实 checkpoint 名称和恢复后的策略环境运行 dry-run：
@@ -170,10 +171,9 @@ bash scripts/robodojo.sh smoke \
 
 ## 6. 常见恢复问题
 
-- `XPolicyLab` 显示 detached HEAD：切回
-  `git -C XPolicyLab switch mingyang/robodojo-migration`。
-- submodule 提交在 GitHub 上找不到：先从迁移包的 Git bundle 恢复，再把本地分支
-  推送到有权限的远端；不要先执行 `submodule update --remote`。
+- `XPolicyLab`、`third_party/IsaacLab`、`third_party/curobo` 或
+  `external_dependencies/WCM` 为空：确认 clone/pull 使用的是完成单仓库转换的
+  RoboDojo commit，不要执行 submodule 命令；必要时重新 clone。
 - CuRobo 报旧机器上的绝对路径不存在：在仓库根目录重新运行
   `python utils/update_embodiment_config_path.py`。
 - OpenPI/Isaac 依赖冲突：确认 Pi_05 使用 `openpi/.venv`，仿真客户端使用

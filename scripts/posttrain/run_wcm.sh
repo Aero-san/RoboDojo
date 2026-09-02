@@ -52,8 +52,8 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
   fi
 fi
 [[ -d "${WCM_ROOT}/world_critic" ]] || {
-  echo "WCM submodule is missing: ${WCM_ROOT}" >&2
-  echo "Run: git submodule update --init --recursive external_dependencies/WCM" >&2
+  echo "Vendored WCM source is missing: ${WCM_ROOT}" >&2
+  echo "Re-clone RoboDojo so external_dependencies/WCM is present." >&2
   exit 1
 }
 [[ -f "${CONFIG}" ]] || { echo "WCM config not found: ${CONFIG}" >&2; exit 1; }

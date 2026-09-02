@@ -17,6 +17,7 @@ extend-exclude = [
     "eval_result",
     "third_party",
     "XPolicyLab",
+    "external_dependencies",
     "Assets",
     "logs",
     "scripts/logs",

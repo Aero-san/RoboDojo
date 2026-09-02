@@ -14,8 +14,8 @@ usage() {
 Usage: bash scripts/migration/create_bundle.sh [--output DIR] [--skip-large-data]
 
 Creates an offline migration folder containing:
-  - Git bundles for RoboDojo and every initialized submodule;
-  - binary patches and untracked, non-ignored source files;
+  - a Git bundle for RoboDojo, including all vendored source trees;
+  - a binary patch and untracked, non-ignored files for the RoboDojo worktree;
   - zstd archives of Assets, checkpoints, datasets, training outputs, and results;
   - metadata and SHA-256 checksums.
 
@@ -64,12 +64,10 @@ write_metadata() {
     printf 'kernel=%s\n' "$(uname -srmo)"
     printf 'robodojo_head=%s\n' "$(git -C "${REPO_ROOT}" rev-parse HEAD)"
     printf 'robodojo_branch=%s\n' "$(git -C "${REPO_ROOT}" branch --show-current)"
-    printf 'xpolicylab_head=%s\n' "$(git -C "${REPO_ROOT}/XPolicyLab" rev-parse HEAD)"
-    printf 'xpolicylab_branch=%s\n' "$(git -C "${REPO_ROOT}/XPolicyLab" branch --show-current)"
   } >"${metadata_file}"
   git -C "${REPO_ROOT}" status --short --branch >"${BUNDLE_DIR}/metadata/robodojo-status.txt"
-  git -C "${REPO_ROOT}" submodule status >"${BUNDLE_DIR}/metadata/submodules.txt"
-  git -C "${REPO_ROOT}/XPolicyLab" status --short --branch >"${BUNDLE_DIR}/metadata/xpolicylab-status.txt"
+  git -C "${REPO_ROOT}" ls-files XPolicyLab third_party external_dependencies \
+    >"${BUNDLE_DIR}/metadata/vendored-sources.txt"
   df -h "${REPO_ROOT}" >"${BUNDLE_DIR}/metadata/disk.txt"
 }
 
@@ -119,7 +117,7 @@ capture_worktree() {
   local untracked_file="${BUNDLE_DIR}/patches/${label}-untracked.tar.zst"
   local lfs_file="${BUNDLE_DIR}/patches/${label}-lfs.tar.zst"
 
-  git -C "${repo_path}" diff --binary --ignore-submodules=all HEAD >"${patch_file}"
+  git -C "${repo_path}" diff --binary HEAD >"${patch_file}"
   git -C "${repo_path}" ls-files --others --exclude-standard -z \
     | tar --null --no-recursion -C "${repo_path}" -T - -cf - \
     | zstd -T0 -1 -f -o "${untracked_file}"
@@ -136,17 +134,6 @@ capture_worktree() {
 write_metadata
 create_git_bundle "${REPO_ROOT}" RoboDojo
 capture_worktree "${REPO_ROOT}" RoboDojo
-
-while IFS=$'\t' read -r sub_path; do
-  [[ -n "${sub_path}" ]] || continue
-  if [[ ! -e "${REPO_ROOT}/${sub_path}/.git" ]]; then
-    warn "Submodule is not initialized, skipping Git bundle: ${sub_path}"
-    continue
-  fi
-  label="$(archive_name_for_path "${sub_path}")"
-  create_git_bundle "${REPO_ROOT}/${sub_path}" "${label}"
-  capture_worktree "${REPO_ROOT}/${sub_path}" "${label}"
-done < <(git -C "${REPO_ROOT}" config --file .gitmodules --get-regexp path | awk '{print $2}')
 
 if [[ "${SKIP_LARGE_DATA}" -eq 0 ]]; then
   LARGE_PATHS=(

@@ -18,7 +18,7 @@ https://private-user-images.githubusercontent.com/88101805/619409345-cc074c5d-45
 
 <p align="center"><em>Overview of RoboDojo. RoboDojo unifies efficient simulation evaluation and reproducible real-world testing for generalist robot manipulation, covering 42 simulation tasks, 18 real-world tasks, heterogeneous parallel simulation, RoboDojo-RealEval, XPolicyLab, and a continuously updated leaderboard.</em></p>
 
-> RoboDojo is **eval-only** in this release: it provides the simulator client, benchmark tasks, asset/config validation, and result artifacts. Policy integration and policy servers are owned by [XPolicyLab](https://github.com/XPolicyLab/XPolicyLab/blob/main/README.md).
+> RoboDojo is **eval-only** in this release: it provides the simulator client, benchmark tasks, asset/config validation, and result artifacts. Policy integration and policy servers are included in the vendored `XPolicyLab/` source tree.
 
 - 🌐 **Unified sim-and-real benchmark** — 42 simulation tasks and 18 real-world tasks across 3 robot embodiments for generalist robot manipulation.
 - 🧭 **Five capability dimensions** — Generalization, Memory, Precision, Long-Horizon, and Open, designed to probe different skills rather than simple object or layout reskins.
@@ -51,17 +51,32 @@ env_cfg/               simulator, scene, robot, and camera configs
 task/RoboDojo/         task logic and task YAML configs
 scripts/robodojo.sh    public RoboDojo-side eval entry
 scripts/eval_policy.sh simulator client launched by XPolicyLab eval.sh
-XPolicyLab/            policy server and policy integrations
+XPolicyLab/            vendored policy server and policy integrations
+third_party/           vendored IsaacLab and CuRobo source
+external_dependencies/ vendored WCM source
 Assets/                downloaded robot, object, material, and layout assets
 ```
+
+## 📦 Single-repository checkout
+
+The source dependencies required by the evaluation and post-training workflows
+are tracked as ordinary files in this RoboDojo repository. A fresh clone already
+contains `XPolicyLab/`, `third_party/IsaacLab/`, `third_party/curobo/`,
+`external_dependencies/WCM/`, and the G05 GalaxeaVLA source; no `.gitmodules`
+file or `git submodule` command is needed. Clone or pull RoboDojo, then follow
+the normal installation instructions.
+
+The vendored snapshot and its upstream commit IDs are recorded in
+[`docs/VENDORED_SOURCES.md`](docs/VENDORED_SOURCES.md). Assets, checkpoints,
+datasets, virtual environments, and runtime outputs remain machine-local and
+are intentionally excluded from Git.
 
 ## 🧠 Pi0.5 WCM / RL Token post-training
 
 The official WCM implementation is configured as
-`external_dependencies/WCM`. Initialize it before training:
+`external_dependencies/WCM` and is already present after cloning RoboDojo:
 
 ```bash
-git submodule update --init --recursive external_dependencies/WCM
 ./scripts/posttrain/install_wcm.sh
 bash scripts/posttrain/run_wcm.sh
 ```
@@ -155,7 +170,7 @@ by the existing XPolicyLab Pi0.5 loader and `scripts/robodojo.sh`.
 
 ## 🔌 Policy Integration
 
-Policies live in [XPolicyLab](https://github.com/XPolicyLab/XPolicyLab/blob/main/README.md), which owns policy structure, dependencies, checkpoint layout, and server behavior. RoboDojo only assumes a policy directory provides:
+Policies live in the vendored [XPolicyLab](https://github.com/XPolicyLab/XPolicyLab/blob/main/README.md) source, which owns policy structure, dependencies, checkpoint layout, and server behavior. RoboDojo only assumes a policy directory provides:
 
 ```text
 XPolicyLab/policy/<POLICY_NAME>/eval.sh

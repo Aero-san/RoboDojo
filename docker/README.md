@@ -1,7 +1,7 @@
 # Run RoboDojo in Docker
 
 This image is the **RoboDojo simulation-evaluation side** — Isaac Sim 5.1,
-IsaacLab, CuRobo, the RoboDojo Python stack, and the lightweight XPolicyLab client
+the vendored IsaacLab and CuRobo source, the RoboDojo Python stack, and the lightweight XPolicyLab client
 used by `src/eval_client`. It contains **no policy, policy dependencies, or
 checkpoints**: your **policy server runs outside the container** and the sim
 client talks to it over the default WebSocket transport (`protocol: ws` in

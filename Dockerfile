@@ -155,10 +155,10 @@ RUN python -m pip install "numpy==1.26.0" "typing_extensions==4.12.2" "filelock=
         --index-url https://download.pytorch.org/whl/cu128 && \
     python -m pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvidia.com
 
-# ── IsaacLab + CuRobo (built from the vendored submodules) ───────────────────
+# ── IsaacLab + CuRobo (built from the vendored source tree) ──────────────────
 # setup_isaaclab() + setup_curobo() + repin_after_curobo() from
-# scripts/install.sh. The submodules are COPYed in; their `.git` submodule pointer
-# files are stripped later (see below) so we never touch git at build/run time.
+# scripts/install.sh. The source snapshots are tracked directly by RoboDojo;
+# no Git metadata is needed at build or run time.
 # Only third_party/ is copied here so a source edit does not invalidate these
 # expensive build layers.
 COPY third_party/ /workspace/RoboDojo/third_party/
@@ -190,15 +190,6 @@ COPY utils/ /workspace/RoboDojo/utils/
 COPY scripts/ /workspace/RoboDojo/scripts/
 COPY XPolicyLab/ /workspace/RoboDojo/XPolicyLab/
 COPY pyproject.toml README.md LICENSE /workspace/RoboDojo/
-
-# ── Strip broken submodule .git pointers ─────────────────────────────────────
-# Vendored submodules are copied with their `.git` files (a submodule `.git` is a
-# FILE, so `.dockerignore`'s `.git/` directory rule misses it). curobo detects its
-# version via setuptools_scm whenever a `.git` exists, which raises LookupError at
-# import time in-image (no real git repo behind the pointer) and crashes eval.
-# Removing them makes curobo fall back to the installed package version. This is a
-# late, cheap layer so the expensive IsaacLab/curobo build layers stay cached.
-RUN find /workspace/RoboDojo/third_party -name .git -prune -exec rm -rf {} + 2>/dev/null; true
 
 # ── Headless RTX render deps + single Vulkan ICD (late, cheap layers) ─────────
 SHELL ["/bin/bash", "-c"]

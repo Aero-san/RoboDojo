@@ -1,0 +1,10 @@
+E0821 15:08:53.558034 2735362 pjrt_stream_executor_client.cc:3077] Execution of replica 0 failed: INVALID_ARGUMENT: Invalid buffer passed to Execute() as argument 53 to replica 0: INVALID_ARGUMENT: Donation requested for buffer with external reference
+Traceback (most recent call last): 
+  File "/share/mingyang/RoboDojo/XPolicyLab/policy/Pi_05/openpi/scripts/train.py", line 389, in <module> main(_config.cli())
+  File "/share/mingyang/RoboDojo/XPolicyLab/policy/Pi_05/openpi/scripts/train.py", line 367, in main
+    train_state, info = ptrain_step(train_rng, train_state, batch)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: INVALID_ARGUMENT: Invalid buffer passed to Execute() as argument 53 to replica 0: INVALID_ARGUMENT: Donation requested for buffer with external reference: while running replica 0 and partition 0 of a replicated computation (other replicas may have failed as well).
+15:08:59.768 [E] [process=0] Failed to run 5 Handler Commit operations or the Commit callback in background save thread, directory: /share/mingyang/RoboDojo/XPolicyLab/policy/Pi_05/checkpoints/RoboDojo-fill_pen_holder-arx_x5-joint-0/100 (2714302:async_checkpointer.py:222)
+
+rsync -avh -P -e "ssh -p 1024 -i ~/.ssh/key_e" --info=progress2 --partial /share/mingyang/RoboDojo/migration_bundle root@139.196.171.150:/tmp/mingyang/robodojo-migration/

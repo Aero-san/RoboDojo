@@ -1,0 +1,5 @@
+# Vendored upstream snapshots retain their original formatting. Keep the
+# repository's whitespace checks focused on RoboDojo-owned source files.
+XPolicyLab/** whitespace=-trailing-space
+third_party/** whitespace=-trailing-space
+external_dependencies/** whitespace=-trailing-space

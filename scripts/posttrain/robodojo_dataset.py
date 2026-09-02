@@ -8,7 +8,7 @@ downloaded dataset.
 
 It is deliberately an adapter, not a second WCM implementation: temporal
 window construction, image preprocessing, language tokenization, model
-forward, losses, checkpoints, and evaluation remain in the WCM submodule.
+forward, losses, checkpoints, and evaluation remain in the vendored WCM source.
 """
 
 from __future__ import annotations

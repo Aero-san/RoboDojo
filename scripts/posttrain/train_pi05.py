@@ -2,7 +2,7 @@
 
 The OpenPI checkout remains the source of the model and optimizer.  This
 launcher only constructs its ``TrainConfig`` so RoboDojo can select a useful
-subset of Pi0.5 parameters without editing the XPolicyLab submodule.
+subset of Pi0.5 parameters without editing unrelated policy code.
 """
 
 from __future__ import annotations
@@ -169,7 +169,7 @@ def _install_source_balancing(
     rollout_weight: float,
     seed: int,
 ) -> dict[str, object]:
-    """Patch the local OpenPI loader without modifying the XPolicyLab submodule."""
+    """Patch the local OpenPI loader without modifying unrelated policy code."""
     if demo_weight <= 0 or rollout_weight <= 0:
         raise ValueError("RECAP demo and rollout sampling weights must both be positive.")
     try:

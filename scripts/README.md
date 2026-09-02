@@ -1,11 +1,16 @@
 # RoboDojo scripts
 
+All source dependencies used by these scripts are checked into the single
+RoboDojo repository. A fresh clone does not require submodule initialization;
+`third_party/`, `external_dependencies/WCM/`, and `XPolicyLab/` are ready to
+use, while environments, assets, checkpoints, and runtime data remain local.
+
 ## Public entry points
 
 | Script | Purpose |
 | --- | --- |
 | [robodojo.sh](robodojo.sh) | Main CLI: `doctor`, `eval`, `client`, `smoke`, `benchmark`, `dimensions`, `summarize`, `tasks` |
-| [install.sh](install.sh) | One-time environment setup (conda, Isaac Sim, submodules) |
+| [install.sh](install.sh) | One-time environment setup (conda, Isaac Sim, vendored sources) |
 | [init_assets.sh](init_assets.sh) | Download robot/object assets |
 | [eval_policy.sh](eval_policy.sh) | Isaac Sim eval client (called by `robodojo.sh client` and XPolicyLab) |
 | [posttrain/run_wcm.sh](posttrain/run_wcm.sh) | Official WCM train/eval on RoboDojo LeRobot-v2.1 data |
@@ -421,4 +426,5 @@ Container install and smoke tests live under [../docker/](../docker/), not here.
 
 ## Policy-specific scripts
 
-Training, data prep, and per-policy `eval.sh` live in [../XPolicyLab/policy/](../XPolicyLab/policy/) (submodule).
+Training, data prep, and per-policy `eval.sh` live in the vendored
+[../XPolicyLab/policy/](../XPolicyLab/policy/) source tree.

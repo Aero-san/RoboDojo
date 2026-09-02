@@ -1,0 +1,71 @@
+# Basic experiment configuration
+policy_name: Pi_05
+protocol: ws
+host: localhost
+bench_name: null
+task_name: null
+env_cfg_type: null
+seed: null
+eval_batch: true
+
+checkpoint_num: 59999
+result_dir: "./results/pi05/"
+obs_transform_pipeline: "xspark-v1.0"
+
+# Model / action configuration
+action_type: joint
+policy_uv_env_path: openpi
+# Must match the config used by train.sh (default OPENPI_TRAIN_CONFIG_NAME).
+train_config_name: pi05_base_aloha_full_sim_arx-x5_seed_0
+repo_id: arx_x5_sim
+
+# Bernoulli-Continuation Policy (Xu et al., 2026). BCP owns horizon selection
+# whenever enabled, so the AAC block below is ignored even if AAC_ENABLED=1.
+# Set BCP_CHECKPOINT for evaluation. For the first rollout policy only, set
+# BCP_INITIALIZE_CHECKPOINT to create a seeded random head after dimensions are
+# inferred from Pi0.5's first forward pass.
+bernoulli_continuation:
+  enabled: false
+  checkpoint: null
+  initialize_checkpoint: null
+  deterministic: true
+  reference: false
+  rollout_dir: null
+  group_id: ""
+  seed: 0
+  candidate_horizons: [15, 20, 25, 30, 35, 40, 45, 50]
+  model_dim: 512
+  num_layers: 2
+  num_heads: 8
+  feedforward_dim: 2048
+  dropout: 0.0
+  delta_positive: 0.7
+  delta_negative: 0.3
+  clip_low: 0.2
+  clip_high: 0.2
+
+# Adaptive Action Chunking (Liang et al., CVPR 2026). Continuous entropy is
+# measured on normalized actions; gripper entropy and movement use executable
+# actions.
+adaptive_action_chunking:
+  enabled: true
+  num_samples: 20
+  min_chunk_size: 2
+  max_chunk_size: null
+  movement_threshold: 3.0
+  covariance_regularization: 1.0e-6
+  discrete_threshold: 0.5
+  magnitude_discrete_threshold: 0.5
+  continuous_entropy_weight: 1.0
+  discrete_entropy_weight: 1.0
+  continuous_magnitude_weight: 1.0
+  discrete_magnitude_weight: 1.0
+  candidate_index: 0
+
+# Optional RoboDojo post-training wrapper.  Keep `base` for the original Pi0.5
+# policy.  For `rltoken` or `wcm_actor`, set POSTTRAIN_CHECKPOINT when launching
+# the server (or replace this with a path relative to policy/Pi_05/).
+posttrain_mode: base
+posttrain_checkpoint: null
+
+port: 6000

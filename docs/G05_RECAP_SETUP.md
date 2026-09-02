@@ -1,8 +1,8 @@
-# G05 RECAP checkout and environment setup
+# G05 RECAP source and environment setup
 
-This document installs the upstream G05 checkout and its Python environment for
-RoboDojo RECAP. G05 uses a project-local `uv` virtual environment; it must not be
-installed into the RoboDojo/Isaac Conda environment.
+This document prepares the vendored G05 source and its Python environment for
+RoboDojo RECAP. G05 uses a project-local `uv` virtual environment; it must not
+be installed into the RoboDojo/Isaac Conda environment.
 
 ## Version anchor
 
@@ -17,7 +17,7 @@ The complete environment is approximately 11 GB. Keep at least another 12 GB
 available while `uv` downloads and unpacks wheels. `ffmpeg` must be available in
 `PATH` for video-backed datasets.
 
-## 1. Install the checkout
+## 1. Use the vendored source
 
 Run this from a RoboDojo checkout. Change `ROBODOJO_ROOT` on each server.
 
@@ -25,11 +25,14 @@ Run this from a RoboDojo checkout. Change `ROBODOJO_ROOT` on each server.
 export ROBODOJO_ROOT=/path/to/RoboDojo
 export G05_DIR="${ROBODOJO_ROOT}/XPolicyLab/policy/G05/GalaxeaVLA"
 
-git clone https://github.com/OpenGalaxea/GalaxeaVLA.git "${G05_DIR}"
-git -C "${G05_DIR}" checkout 89f2322b4ad016e192437adc1a2c253b05bab246
+test -f "${G05_DIR}/pyproject.toml" || {
+  echo "Vendored G05 source is missing: ${G05_DIR}" >&2
+  echo "Clone or pull a RoboDojo revision containing the vendored source." >&2
+  exit 1
+}
 ```
 
-The checkout is intentionally nested below the XPolicyLab G05 adapter. Do not
+The source is intentionally nested below the XPolicyLab G05 adapter. Do not
 copy a `.venv` from another server: virtual environments contain absolute paths.
 
 ## 2. Install or resume the environment
@@ -120,7 +123,7 @@ The expected final line is `Would make no changes`.
 ## 4. Download the processor asset
 
 RECAP uses the initial checkpoint's action tokenizer and dataset statistics, but
-the upstream G05 checkout must also contain the Qwen 3.5 processor directory.
+the vendored G05 source tree must also contain the Qwen 3.5 processor directory.
 Download only that directory instead of the complete model repository:
 
 ```bash
@@ -142,7 +145,7 @@ XPolicyLab/policy/G05/GalaxeaVLA/checkpoints/qwen3_5_2b_base_processor
 The RoboDojo FM-only checkpoint remains at
 `XPolicyLab/policy/G05/checkpoints/hf_g05_robodojo_fm_only_checkpoint`.
 RECAP packages that checkpoint and its sidecars automatically; it does not need
-to be copied below the upstream checkout.
+to be copied below the vendored source tree.
 
 ## 5. Configure local training with remote rollout
 
@@ -199,7 +202,7 @@ runtime:
 ```
 
 The rollout settings from stage 5 still refer to `XYZ4090`; rollout and training
-hosts each need their own checkout, `.venv`, and processor directory.
+hosts each need their own RoboDojo checkout, `.venv`, and processor directory.
 
 ## 7. Validate and launch
 
@@ -216,15 +219,15 @@ RECAP_CONFIG=configs/posttrain/g05_remote.yaml bash remote_training.sh
 ```
 
 The second command starts the actual RECAP run. Run it only after the config
-validator succeeds and the corresponding checkout/environment paths exist on
+validator succeeds and the corresponding RoboDojo/environment paths exist on
 every enabled host.
 
 ## Current-server recovery point (2026-08-28)
 
 Current server root: `/mnt/cpfs-E/mingyang/RoboDojo`.
 
-- Stage 1 complete: official checkout is installed at
-  `XPolicyLab/policy/G05/GalaxeaVLA`, pinned at commit `89f2322`.
+- Stage 1 complete: vendored G05 source is available at
+  `XPolicyLab/policy/G05/GalaxeaVLA`, imported at commit `89f2322`.
 - Stage 2 complete: `.venv` is installed with Python 3.10.21 and occupies about
   11 GB. The reusable temporary uv cache is `/tmp/robodojo_g05_uv_cache`, also
   about 11 GB.
@@ -235,8 +238,8 @@ Current server root: `/mnt/cpfs-E/mingyang/RoboDojo`.
 - Stage 5 pending: `configs/posttrain/g05_remote.yaml` still contains obsolete
   `/mlplatform/...` and `/efm-nas/...` G05 paths and has
   `runtime.policy_python: null` while local training is enabled.
-- Remote setup pending: `XYZ4090` and `XYZ6226` do not currently contain the G05
-  checkout or `.venv` at the paths shown above.
+- Remote setup pending: `XYZ4090` and `XYZ6226` do not currently contain the
+  RoboDojo checkout or `.venv` at the paths shown above.
 
 Therefore, continue from **stage 4** on the current server. If environment
 integrity is ever uncertain, rerun stage 2 first; it is safe and will reuse the

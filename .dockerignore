@@ -5,7 +5,6 @@
 # ── VCS / IDE / agent / dev scratch ──────────────────────────────────
 .git/
 .gitignore
-.gitmodules
 .github/
 .cursor/
 .claude/
@@ -32,7 +31,7 @@ Assets/
 build/
 dist/
 
-# ── Vendored submodule build artifacts (rebuilt inside the image) ─────
+# ── Vendored source build artifacts (rebuilt inside the image) ───────
 third_party/**/*.so
 third_party/**/build/
 third_party/**/*.egg-info/

@@ -50,8 +50,8 @@ def _install_ddp_model_compatibility() -> None:
     WCM consumes ``last_hidden_state`` and never consumes ViT's pooled output.
     Some ViT checkpoints still register a trainable ``pooler.dense`` module,
     which produces no gradient and causes DDP's default unused-parameter check
-    to fail on the next iteration.  Keep this compatibility patch in the
-    tracked GR00T adapter so a clean official WCM submodule gets the same fix.
+    to fail on the next iteration. Keep this compatibility patch in the
+    tracked GR00T adapter so the vendored WCM source gets the same fix.
     """
 
     from world_critic.model import VisionEncoder

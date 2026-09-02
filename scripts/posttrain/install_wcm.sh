@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create/update the Python environment declared by the WCM submodule.
+# Create/update the Python environment declared by the vendored WCM source.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,8 +11,8 @@ command -v uv >/dev/null 2>&1 || {
   exit 1
 }
 [[ -f "${WCM_ROOT}/pyproject.toml" ]] || {
-  echo "WCM submodule is not initialized: ${WCM_ROOT}" >&2
-  echo "Run: git submodule update --init --recursive external_dependencies/WCM" >&2
+  echo "Vendored WCM source is missing: ${WCM_ROOT}" >&2
+  echo "Re-clone RoboDojo so external_dependencies/WCM is present." >&2
   exit 1
 }
 

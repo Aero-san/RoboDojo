@@ -22,22 +22,27 @@ src/eval_client/             eval client (main.py, eval_env.py)
 utils/                       paths, save/load, pipeline helpers
 scripts/                     robodojo.sh, install.sh, init_assets.sh, internal/
 docker/                      container eval (see docker/README.md)
-XPolicyLab/                  policy server + deploy (submodule)
-third_party/                 IsaacLab, curobo (submodules)
+XPolicyLab/                  vendored policy server + deploy source
+third_party/                 vendored IsaacLab and curobo source
+external_dependencies/WCM/   vendored WCM source
 Assets/                      robot/object assets (scripts/init_assets.sh; not in git)
 eval_result/                 runtime eval output
 ```
 
-## Submodules & Ownership
+## Vendored sources & ownership
 
-| Own in RoboDojo | Own in XPolicyLab |
+All source trees are ordinary files tracked by RoboDojo. Commit changes to the
+corresponding path in this repository so other machines receive them through
+the normal Git workflow. The source snapshot provenance is recorded in
+`docs/VENDORED_SOURCES.md`.
+
+| Path | Scope |
 | :-- | :-- |
-| `env/`, `env_cfg/`, `task/RoboDojo/`, `src/eval_client/` | Policy code, checkpoints, `deploy.yml`, policy server |
-| `scripts/robodojo.sh`, `scripts/eval_policy.sh` | `XPolicyLab/policy/<POLICY>/eval.sh`, `setup_eval_*` scripts |
-| `utils/`, install/assets scripts | Policy-specific dependencies and training |
+| `env/`, `env_cfg/`, `task/RoboDojo/`, `src/eval_client/` | RoboDojo simulator and benchmark |
+| `scripts/robodojo.sh`, `scripts/eval_policy.sh` | RoboDojo evaluation entry points |
+| `XPolicyLab/` | Policy code, checkpoints layout, deploy adapters, and policy server |
+| `third_party/`, `external_dependencies/WCM/` | Vendored simulator, motion-planning, and WCM source |
 
-- Submodule URL: `https://github.com/XPolicyLab/XPolicyLab.git` (branch `main`).
-- Update the gitlink pin intentionally; do not edit submodule contents unless updating the pin.
 - RoboDojo eval client uses `XPolicyLab/client_server/ws/model_client.py` (WebSocket transport).
 
 ## Eval Commands & Flow
@@ -108,7 +113,7 @@ New code imports from `env.*`.
 - **Python module files**: `snake_case.py` — `task_env.py`, `obs_manager.py`
 - **Python classes**: **PascalCase** — `RewardManager`, `TaskEnv`
 - **Tasks**: filename, YAML name, exported env class, and layout/result paths must match. Most tasks use lowercase `snake_case`; **`play_Xylophone`**, **`swap_T`**, **`push_T`**, and **`push_T_random`** match uppercase asset names.
-- **Submodules**: keep upstream casing — `XPolicyLab/`, `Assets/`
+- **Vendored source directories**: keep upstream casing — `XPolicyLab/`, `Assets/`
 
 ## Code Conventions
 
@@ -170,7 +175,8 @@ bash -n scripts/robodojo.sh scripts/eval_policy.sh
 python scripts/internal/task_inventory.py --format json --check
 bash scripts/robodojo.sh doctor --skip-isaac --skip-conda --skip-policy
 ruff check .
-git diff --check
+git diff --check -- . ':!XPolicyLab' ':!third_party' ':!external_dependencies'
+git diff --cached --check -- . ':!XPolicyLab' ':!third_party' ':!external_dependencies'
 ```
 
 ### Dry-run eval path (no Isaac, no policy server)
@@ -256,9 +262,8 @@ When creating a PR (`gh pr create`):
 - `step_lim = 200` on long-horizon tasks → truncation artifacts
 - Camera config changes affecting all tasks without announcement
 - Treating an `eval.sh` exit code alone as smoke success → also require `_result.json` with `eval_time >= 1`
-- Editing policy logic in RoboDojo instead of XPolicyLab
 - Running policy `setup_eval_*` without CWD in the policy directory
-- Treating submodule content as owned by this repo unless explicitly updating the gitlink pin
+- Treating vendored source as external; commit source changes in RoboDojo so other machines receive them
 
 
 ## Coding Rules

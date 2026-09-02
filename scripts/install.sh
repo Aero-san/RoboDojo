@@ -120,20 +120,23 @@ setup_base_deps() {
   info "[2/7] Installing base pip dependencies..."
   pip_install -r "$CURRENT_DIR/scripts/requirements.txt"
 }
-setup_submodules() {
+setup_vendored_sources() {
   cd "$CURRENT_DIR" || exit 1
-  local subs=(third_party/IsaacLab third_party/curobo XPolicyLab)
-  info "[3/7] Syncing submodules to the commits pinned by RoboDojo..."
-  git submodule sync "${subs[@]}"
-  for sub in "${subs[@]}"; do
-    info "    Restoring pinned submodule commit for ${sub}..."
-    git submodule update --init --progress "$sub" || {
-      [ "$sub" = "XPolicyLab" ] && error "Failed to clone XPolicyLab. Ensure HTTPS auth (e.g. gh auth login)."
-      error "Failed to update $sub."
-    }
+  local required_paths=(
+    third_party/IsaacLab/isaaclab.sh
+    third_party/curobo/setup.py
+    XPolicyLab/client_server/ws/model_client.py
+    XPolicyLab/policy/G05/GalaxeaVLA/pyproject.toml
+    external_dependencies/WCM/pyproject.toml
+  )
+  info "[3/7] Checking vendored source tree..."
+  for path in "${required_paths[@]}"; do
+    [ -e "$path" ] || error "Vendored source is missing: ${CURRENT_DIR}/${path}. Re-clone RoboDojo."
   done
-  [ -f "XPolicyLab/client_server/ws/model_client.py" ] \
-    || error "XPolicyLab init failed. Check repo access."
+  if find XPolicyLab third_party external_dependencies \
+    \( -name .git -o -name .gitmodules \) -print -quit | grep -q .; then
+    error "Vendored source tree contains Git metadata. Remove it and re-clone RoboDojo."
+  fi
 }
 setup_isaacsim() {
   if ! python -m pip show isaacsim 2>/dev/null | grep -q "5.1.0"; then
@@ -196,13 +199,13 @@ usage() {
   echo "Usage: $0 [-i | --from <step>]"
   echo "  -i, --install          Full install (all steps)"
   echo "  --from <step>          Resume from a specific step:"
-  echo "                           system | conda | base_deps | submodules | isaacsim | isaaclab | curobo"
+  echo "                           system | conda | base_deps | vendored_sources | isaacsim | isaaclab | curobo"
   echo "  ISAACLAB_RL_FRAMEWORK  IsaacLab RL extras to install (default: none; use all/sb3/skrl/etc. if needed)"
   echo "  -h, --help             Show this help"
 }
 run_from() {
   local from="$1"
-  local steps=(system conda base_deps submodules isaacsim isaaclab curobo)
+  local steps=(system conda base_deps vendored_sources isaacsim isaaclab curobo)
   local start=0
   local found=0
   for i in "${!steps[@]}"; do

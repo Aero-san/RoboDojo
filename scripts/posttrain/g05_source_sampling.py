@@ -4,7 +4,7 @@ G05's ``MixtureLerobotDataset`` can weight dataset groups, but a RECAP
 dataset is one LeRobot directory containing both demonstrations and rollouts.
 This module wraps the instantiated training dataset with a deterministic
 virtual index stream so the source weights apply without copying video data
-or modifying the XPolicyLab submodule.
+or modifying unrelated policy code.
 """
 
 from __future__ import annotations
