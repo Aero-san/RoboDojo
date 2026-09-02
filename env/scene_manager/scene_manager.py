@@ -639,8 +639,20 @@ class SceneManager:
 
         for obj_dict in collections_to_clear:
             for obj_key, obj in list(obj_dict.items()):
-                self.delete_scene_object(obj)
-                del obj_dict[obj_key]
+                try:
+                    self.delete_scene_object(obj)
+                except Exception as exc:
+                    # Cleanup runs after both normal episodes and failed
+                    # initialization.  One half-initialized object must not
+                    # prevent the remaining objects and simulation context
+                    # from being released.
+                    print(
+                        f"[SceneManager] failed to clean up {obj_key}: "
+                        f"{type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+                finally:
+                    del obj_dict[obj_key]
 
     def relocate_stale_objects(self, env_id: int, obj_types: List[str] = None):
         """Relocate stale scene objects offscreen and clear their velocities without deleting prims.

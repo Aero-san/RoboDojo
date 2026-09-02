@@ -5,7 +5,7 @@ policy:
 
 run:
   task: general_pickup
-  output_root: outputs/recap_g05_remote_hf_fm_only
+  output_root: outputs-6226/recap_g05_remote_hf_fm_only
   iterations: 10
   resume: true
   reuse_completed_artifacts: true

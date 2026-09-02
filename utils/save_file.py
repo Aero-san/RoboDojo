@@ -1,10 +1,72 @@
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 from typing import Any
 
 import numpy as np
+
+_VIDEO_ENCODER_PREFERENCE = (
+    "libx264",
+    "libopenh264",
+    "h264_nvenc",
+    "mpeg4",
+)
+
+
+@lru_cache(maxsize=1)
+def _resolve_video_encoder() -> tuple[str, str]:
+    """Return an ffmpeg executable and an encoder available in that build.
+
+    The RoboDojo conda environment can provide an FFmpeg build without the
+    GPL codecs, so ``libx264`` cannot be assumed to exist.  Resolve the codec
+    once per process and keep hardware encoding below software H.264 codecs:
+    video recording should not compete with Isaac Sim for GPU memory.
+    ``ROBODOJO_VIDEO_ENCODER`` can be used to force a particular encoder.
+    """
+    ffmpeg_path = os.environ.get("ROBODOJO_FFMPEG") or shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        raise RuntimeError(
+            "Cannot save rollout video: ffmpeg was not found on PATH. "
+            "Install ffmpeg or set ROBODOJO_FFMPEG to its executable."
+        )
+
+    probe = subprocess.run(
+        [ffmpeg_path, "-hide_banner", "-encoders"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    available = {
+        fields[1]
+        for line in probe.stdout.splitlines()
+        if (fields := line.split()) and len(fields) >= 2 and fields[0].startswith("V")
+    }
+
+    requested = os.environ.get("ROBODOJO_VIDEO_ENCODER", "").strip()
+    if requested:
+        if requested not in available:
+            available_text = ", ".join(sorted(available)) or "none"
+            raise RuntimeError(
+                f"Requested rollout video encoder {requested!r} is not available "
+                f"in {ffmpeg_path}. Available video encoders: {available_text}."
+            )
+        return ffmpeg_path, requested
+
+    for encoder in _VIDEO_ENCODER_PREFERENCE:
+        if encoder in available:
+            return ffmpeg_path, encoder
+
+    available_text = ", ".join(sorted(available)) or "none"
+    probe_error = probe.stderr.strip()
+    detail = f" ffmpeg reported: {probe_error}" if probe_error else ""
+    raise RuntimeError(
+        f"Cannot save rollout video: no supported encoder is available in "
+        f"{ffmpeg_path}. Tried {', '.join(_VIDEO_ENCODER_PREFERENCE)}; "
+        f"available video encoders: {available_text}.{detail}"
+    )
 
 
 def format_video_saved_message(
@@ -51,10 +113,11 @@ class VideoStreamWriter:
         self.channels = channels
         self.fps = fps
         self.n_frames = 0
+        self.ffmpeg_path, self.encoder = _resolve_video_encoder()
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         self.proc = subprocess.Popen(
             [
-                "ffmpeg",
+                self.ffmpeg_path,
                 "-y",
                 "-loglevel",
                 "error",
@@ -71,9 +134,14 @@ class VideoStreamWriter:
                 "-pix_fmt",
                 "yuv420p",
                 "-vcodec",
-                "libx264",
-                "-crf",
-                "23",
+                self.encoder,
+                *(
+                    ["-crf", "23"]
+                    if self.encoder in {"libx264", "libopenh264"}
+                    else ["-cq", "23"]
+                    if self.encoder == "h264_nvenc"
+                    else ["-q:v", "5"]
+                ),
                 out_path,
             ],
             stdin=subprocess.PIPE,
@@ -87,7 +155,14 @@ class VideoStreamWriter:
                 f"Frame shape {tuple(frame.shape)} does not match writer ({self.height}x{self.width}x{self.channels})."
             )
         frame = np.ascontiguousarray(frame, dtype=np.uint8)
-        self.proc.stdin.write(frame.tobytes())
+        try:
+            self.proc.stdin.write(frame.tobytes())
+        except BrokenPipeError as exc:
+            returncode = self.proc.poll()
+            raise RuntimeError(
+                f"ffmpeg video encoder {self.encoder!r} exited while writing "
+                f"`{self.out_path}` (return code: {returncode})."
+            ) from exc
         self.n_frames += 1
 
     def close(self, *, announce: bool = True) -> None:

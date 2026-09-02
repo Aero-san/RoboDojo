@@ -93,8 +93,13 @@ class TaskEnv(BaseEnv):
         self.robot_manager.control_robot(meta_control_list=meta_control_list)
 
     def close(self):
-        self.capture_manager.destroy()
-        self.camera_manager.destroy()
-        self.robot_manager.close()
-        self.scene_manager.close()
-        super().close()
+        try:
+            self.capture_manager.destroy()
+            self.camera_manager.destroy()
+            self.robot_manager.close()
+            self.scene_manager.close()
+        finally:
+            # A scene/object cleanup failure must not prevent BaseEnv from
+            # stopping the timeline, releasing SimulationContext, and
+            # resetting the USD stage.
+            super().close()
