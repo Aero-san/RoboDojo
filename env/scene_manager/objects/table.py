@@ -20,7 +20,8 @@ import omni.kit.commands
 from omni.physx.scripts import physicsUtils
 import omni.usd
 from pxr import Gf, Usd, UsdGeom, UsdShade
-import torch
+
+from env.scene_manager.objects.velocity import make_root_velocities
 
 
 def resolve_path(path: str) -> str | None:
@@ -190,10 +191,13 @@ class Table(SingleGeometryPrim, SingleRigidPrim):
 
     def _apply_default_velocities(self):
         """Re-apply default linear/angular velocity if configured."""
-        if self._default_linear_velocity is not None:
-            self.set_linear_velocity(torch.tensor(self._default_linear_velocity))
-        if self._default_angular_velocity is not None:
-            self.set_angular_velocity(torch.tensor(self._default_angular_velocity))
+        if self._default_linear_velocity is not None or self._default_angular_velocity is not None:
+            self._rigid_prim_view.set_velocities(
+                velocities=make_root_velocities(
+                    self._default_linear_velocity,
+                    self._default_angular_velocity,
+                )
+            )
 
     def _setup_physics(self):
         """Configure physics properties (rigid type, mass) from instance config."""

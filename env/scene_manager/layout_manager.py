@@ -464,6 +464,18 @@ class LayoutManager:
             if not relative:
                 env_pos = deepcopy(self.scene_manager.env_origins[env_idx]).to(device)
                 pos = pos + env_pos
+            # Reward functions operate on NumPy/Shapely values.  The CUDA
+            # physics backend returns tensors from object pose queries, so
+            # convert them at this boundary instead of allowing NumPy calls
+            # to trigger an implicit CUDA -> host conversion.
+            if isinstance(pos, torch.Tensor):
+                pos = pos.detach().cpu().numpy().copy()
+            else:
+                pos = np.asarray(pos, dtype=np.float32)
+            if isinstance(rot, torch.Tensor):
+                rot = rot.detach().cpu().numpy().copy()
+            else:
+                rot = np.asarray(rot, dtype=np.float32)
             return (pos, rot)
         elif instance_type in ["garment", "geometry"]:
             state = obj.get_state(is_relative=True)

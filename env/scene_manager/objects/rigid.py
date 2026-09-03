@@ -13,6 +13,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 import torch
 
 from env.scene_manager.layout_manager import LayoutManager
+from env.scene_manager.objects.velocity import make_root_velocities
 
 
 class RigidObject(SingleRigidPrim, SingleGeometryPrim):
@@ -263,10 +264,13 @@ class RigidObject(SingleRigidPrim, SingleGeometryPrim):
 
     def _apply_default_velocities(self):
         """Re-apply default linear/angular velocity if configured."""
-        if self._default_linear_velocity is not None:
-            self.set_linear_velocity(torch.tensor(self._default_linear_velocity))
-        if self._default_angular_velocity is not None:
-            self.set_angular_velocity(torch.tensor(self._default_angular_velocity))
+        if self._default_linear_velocity is not None or self._default_angular_velocity is not None:
+            self._rigid_prim_view.set_velocities(
+                velocities=make_root_velocities(
+                    self._default_linear_velocity,
+                    self._default_angular_velocity,
+                )
+            )
 
     def destroy(self):
         self._rigid_prim_view.disable_gravities()

@@ -16,6 +16,8 @@ import omni.usd
 from pxr import PhysxSchema, Usd, UsdGeom, UsdPhysics, UsdShade
 import torch
 
+from env.scene_manager.objects.velocity import make_root_velocities
+
 
 class ArticulationObject(SingleArticulation):
     """
@@ -36,6 +38,14 @@ class ArticulationObject(SingleArticulation):
         """
         Initialize the ArticulationObject with position, orientation, and configuration.
         """
+        # ``initialize`` can fail after Isaac Sim has created the low-level
+        # articulation handle.  Keep cleanup state explicit so a partially
+        # initialized object never tries to restore a pose that was not saved.
+        self._initialized = False
+        self.upper_joint_positions = None
+        self.lower_joint_positions = None
+        self.initial_joint_positions = None
+
         if usd_path:
             prim = add_reference_to_stage(usd_path=usd_path, prim_path=prim_path)
         else:
@@ -93,10 +103,13 @@ class ArticulationObject(SingleArticulation):
 
     def _apply_default_velocities(self):
         """Re-apply default linear/angular velocity if configured."""
-        if self._default_linear_velocity is not None:
-            self.set_linear_velocity(torch.tensor(self._default_linear_velocity))
-        if self._default_angular_velocity is not None:
-            self.set_angular_velocity(torch.tensor(self._default_angular_velocity))
+        if self._default_linear_velocity is not None or self._default_angular_velocity is not None:
+            self._articulation_view.set_velocities(
+                velocities=make_root_velocities(
+                    self._default_linear_velocity,
+                    self._default_angular_velocity,
+                )
+            )
 
     def fix_root_link(self):
         stage = get_current_stage()
@@ -230,13 +243,41 @@ class ArticulationObject(SingleArticulation):
         return modified_config
 
     def initialize(self):
+        self._initialized = False
+        self.upper_joint_positions = None
+        self.lower_joint_positions = None
+        self.initial_joint_positions = None
         self.physics_sim_view = SimulationManager.get_physics_sim_view()
         super().initialize(physics_sim_view=self.physics_sim_view)
-        self.upper_joint_positions = self.dof_properties["upper"].copy()
-        self.lower_joint_positions = self.dof_properties["lower"].copy()
-        self.initial_joint_positions = self.get_current_joint_positions()
+
+        # Isaac Sim 4.5 exposes ``dof_properties`` as a NumPy structured
+        # array, but its tensor backend may return CUDA tensors for some
+        # fields.  The upstream property assigns those tensors into the
+        # NumPy array and raises ``can't convert cuda... to numpy``.  Read
+        # only the limits we need from the view and make the device transfer
+        # explicit instead of using the broken compatibility property.
+        dof_limits = self._articulation_view.get_dof_limits()
+        if dof_limits is None:
+            raise RuntimeError(f"Could not read DOF limits for articulation {self._prim_path}")
+        dof_limits = self._to_numpy(dof_limits[0])
+        self.lower_joint_positions = dof_limits[:, 0].copy()
+        self.upper_joint_positions = dof_limits[:, 1].copy()
+
+        initial_joint_positions = self.get_current_joint_positions()
+        if isinstance(initial_joint_positions, torch.Tensor):
+            self.initial_joint_positions = initial_joint_positions.detach().clone()
+        else:
+            self.initial_joint_positions = np.array(initial_joint_positions, copy=True)
         self.app = omni.kit.app.get_app()
         self.app.update()
+        self._initialized = True
+
+    @staticmethod
+    def _to_numpy(value):
+        """Copy a backend value to host NumPy memory without implicit conversion."""
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu().numpy()
+        return np.asarray(value)
 
     def get_current_joint_positions(self):
         return self.get_joint_positions()
@@ -258,6 +299,8 @@ class ArticulationObject(SingleArticulation):
         return None
 
     def apply_saved_pose(self):
+        if not self._initialized:
+            raise RuntimeError(f"Articulation {self._prim_path} is not initialized")
         self.set_current_joint_positions(self.initial_joint_positions)
         pos = self.default_pos
         ori = self.default_ori
@@ -275,6 +318,18 @@ class ArticulationObject(SingleArticulation):
                 imageable.MakeInvisible()
 
     def relocate_offscreen(self):
+        # Initialization may fail before ``initial_joint_positions`` and the
+        # application handle are available.  Cleanup must remain non-throwing
+        # in that case; touching the physics tensor view here can invalidate
+        # it while other scene objects are being removed.
+        if not self._initialized:
+            prim = getattr(self, "prim", None)
+            if prim is not None and prim.IsValid():
+                imageable = UsdGeom.Imageable(prim)
+                if imageable:
+                    imageable.MakeInvisible()
+            return
+
         _FAR_CENTER = (100000.0, 100000.0, 100000)
         _FAR_JITTER = 1000.0
         pos = (
