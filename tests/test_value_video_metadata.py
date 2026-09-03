@@ -17,6 +17,14 @@ def _write_json(path: Path, payload) -> None:
 
 
 class ValueVideoInstructionMetadataTest(unittest.TestCase):
+    def test_first_value_video_validation_does_not_require_future_marker(self):
+        source = Path("scripts/posttrain/run_recap.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'artifact_complete value_videos "${ITER_DIR}/value_videos" '
+            '"${VALUE_VIDEO_EPISODES}" "" || {',
+            source,
+        )
+
     def test_remote_renderer_resolves_support_from_remote_repo(self):
         source = Path(
             "scripts/posttrain/render_rollout_value_videos.py"

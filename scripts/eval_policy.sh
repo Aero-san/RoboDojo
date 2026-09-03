@@ -27,6 +27,7 @@ host="localhost"
 protocol=""
 policy_server_url=""
 max_steps="${ROBODOJO_MAX_STEPS:-}"
+fixed_horizon="${ROBODOJO_FIXED_HORIZON:-0}"
 extra_args=()
 save_video="${ROBODOJO_SAVE_VIDEO:-1}"
 
@@ -57,6 +58,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --save-video)
       save_video=1
+      shift
+      ;;
+    --fixed_horizon)
+      fixed_horizon=1
       shift
       ;;
     --no-video)
@@ -144,11 +149,24 @@ if [[ -n "${max_steps}" ]]; then
 else
   echo "[INFO] max_steps       = task default"
 fi
+if [[ "${fixed_horizon}" != "0" && "${fixed_horizon}" != "1" ]]; then
+  echo "[ERROR] ROBODOJO_FIXED_HORIZON must be 0 or 1, got: ${fixed_horizon}" >&2
+  exit 2
+fi
+if [[ "${fixed_horizon}" == "1" && -z "${max_steps}" ]]; then
+  echo "[ERROR] fixed_horizon requires max_steps" >&2
+  exit 2
+fi
+echo "[INFO] fixed_horizon   = ${fixed_horizon}"
 
 extra_args=()
 max_steps_args=()
+fixed_horizon_args=()
 if [[ -n "${max_steps}" ]]; then
   max_steps_args=(--max_steps "${max_steps}")
+fi
+if [[ "${fixed_horizon}" == "1" ]]; then
+  fixed_horizon_args=(--fixed_horizon)
 fi
 
 KIT_ENABLE_EXTS=(
@@ -192,6 +210,7 @@ while : ; do
     --seed "$seed" \
     --host "$host" \
     "${max_steps_args[@]}" \
+    "${fixed_horizon_args[@]}" \
     --headless \
     --rendering_mode "${ROBODOJO_RENDERING_MODE:-performance}" \
     "${extra_args[@]}" \

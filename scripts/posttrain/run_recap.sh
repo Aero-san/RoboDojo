@@ -114,6 +114,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-${ROOT_DIR}/outputs/recap}"
 ITERATIONS="${RECAP_ITERATIONS:-3}"
 ROLLOUT_EPISODES="${RECAP_ROLLOUT_EPISODES:-100}"
 ROLLOUT_MAX_STEPS="${RECAP_ROLLOUT_MAX_STEPS:-40}"
+ROLLOUT_FIXED_HORIZON="${RECAP_ROLLOUT_FIXED_HORIZON:-0}"
 MIN_ROLLOUT_EPISODES="${RECAP_MIN_ROLLOUT_EPISODES:-50}"
 MIN_SUCCESS_EPISODES="${RECAP_MIN_SUCCESS_EPISODES:-5}"
 MIN_FAILURE_EPISODES="${RECAP_MIN_FAILURE_EPISODES:-5}"
@@ -262,6 +263,14 @@ fi
 [[ "${ITERATIONS}" =~ ^[1-9][0-9]*$ ]] || { echo "--iterations must be positive" >&2; exit 2; }
 [[ "${ROLLOUT_EPISODES}" =~ ^[1-9][0-9]*$ ]] || { echo "--rollout-episodes must be positive" >&2; exit 2; }
 [[ "${ROLLOUT_MAX_STEPS}" =~ ^[1-9][0-9]*$ ]] || { echo "RECAP_ROLLOUT_MAX_STEPS must be positive" >&2; exit 2; }
+[[ "${ROLLOUT_FIXED_HORIZON}" == "0" || "${ROLLOUT_FIXED_HORIZON}" == "1" ]] || {
+  echo "RECAP_ROLLOUT_FIXED_HORIZON must be 0 or 1" >&2
+  exit 2
+}
+ROLLOUT_HORIZON_ARGS=()
+if [[ "${ROLLOUT_FIXED_HORIZON}" == "1" ]]; then
+  ROLLOUT_HORIZON_ARGS+=(--fixed-horizon)
+fi
 [[ "${NUM_TRAIN_STEPS}" =~ ^[1-9][0-9]*$ ]] || { echo "--num-train-steps must be positive" >&2; exit 2; }
 [[ "${MIN_ROLLOUT_EPISODES}" =~ ^[1-9][0-9]*$ ]] || { echo "RECAP_MIN_ROLLOUT_EPISODES must be positive" >&2; exit 2; }
 [[ "${MIN_SUCCESS_EPISODES}" =~ ^[0-9]+$ ]] || { echo "RECAP_MIN_SUCCESS_EPISODES must be non-negative" >&2; exit 2; }
@@ -493,7 +502,7 @@ else
   FSDP_DEVICES=1
 fi
 echo "[RECAP devices] ${POLICY_NAME}=${TRAIN_GPUS} (${GPU_COUNT} local devices, effective=${EFFECTIVE_POLICY_GPU_COUNT}, FSDP=${FSDP_DEVICES}, data_parallel=$((EFFECTIVE_POLICY_GPU_COUNT / FSDP_DEVICES)))"
-echo "[RECAP devices] rollout policy=${POLICY_GPU}, Isaac Sim=${ENV_GPU}, max_steps=${ROLLOUT_MAX_STEPS} (one stateful episode is sequential)"
+echo "[RECAP devices] rollout policy=${POLICY_GPU}, Isaac Sim=${ENV_GPU}, max_steps=${ROLLOUT_MAX_STEPS}, fixed_horizon=${ROLLOUT_FIXED_HORIZON} (one stateful episode is sequential)"
 if (( TRAINING_REMOTE_ENABLED )); then
   echo "[RECAP devices] remote training=${TRAINING_REMOTE_HOST} ${POLICY_NAME}=${TRAINING_REMOTE_POLICY_GPUS}, WCM=${TRAINING_REMOTE_WCM_GPUS}"
 fi
@@ -615,6 +624,7 @@ run_policy_evaluation() {
       --g05-action-source "${ROBODOJO_G05_ACTION_SOURCE:-fm}" \
       --checkpoint "${checkpoint}" --output "${output}" --task "${TASK_NAME}" \
       --episodes "${episodes}" --max-steps "${ROLLOUT_MAX_STEPS}" \
+      "${ROLLOUT_HORIZON_ARGS[@]}" \
       --layout-seed "${EFFECTIVE_POLICY_EVAL_LAYOUT_SEED}" \
       --layout-offset "${layout_offset}" \
       --policy-gpu "${REMOTE_POLICY_GPU}" --env-gpu "${REMOTE_ENV_GPU}" \
@@ -639,6 +649,7 @@ run_policy_evaluation() {
       --policy-gpu "${POLICY_GPU}" --env-gpu "${ENV_GPU}" \
       --policy-env "${POLICY_ENV}" --eval-env "${EVAL_ENV}" \
       --eval-num "${episodes}" --max-steps "${ROLLOUT_MAX_STEPS}" \
+      "${ROLLOUT_HORIZON_ARGS[@]}" \
       --rollout-dir "${output}" --no-video \
       >"${log}" 2>&1 || eval_status=$?
   reserve_all_local_gpus "post-evaluation processing"
@@ -658,6 +669,7 @@ evaluate_policy_checkpoint() {
   eval_fp=$(stage_fingerprint policy_eval \
     "iteration=${ACTIVE_STAGE_FP}" "checkpoint=${checkpoint}" \
     "episodes=${POLICY_EVAL_EPISODES}" "max_steps=${ROLLOUT_MAX_STEPS}" \
+    "fixed_horizon=${ROLLOUT_FIXED_HORIZON}" \
     "seed=${EFFECTIVE_POLICY_EVAL_LAYOUT_SEED}" \
     "offset=${EFFECTIVE_POLICY_EVAL_LAYOUT_OFFSET}" \
     "reuse_rollout=$([[ -n "${reuse_source}" ]] && echo 1 || echo 0)")
@@ -865,6 +877,7 @@ RUN_CONFIG_FP=$(stage_fingerprint run \
   "initial_policy=$(realpath "${INITIAL_POLICY_CHECKPOINT}")" \
   "initial_wcm=${INITIAL_WCM_CHECKPOINT}" \
   "rollout_episodes=${ROLLOUT_EPISODES}" "rollout_max_steps=${ROLLOUT_MAX_STEPS}" \
+  "rollout_fixed_horizon=${ROLLOUT_FIXED_HORIZON}" \
   "min_rollouts=${MIN_ROLLOUT_EPISODES}" \
   "min_successes=${MIN_SUCCESS_EPISODES}" "min_failures=${MIN_FAILURE_EPISODES}" \
   "max_demos=${MAX_DEMO_EPISODES}" "wcm_replay=${WCM_REPLAY_EPISODES}" \
@@ -1057,6 +1070,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
             --eval-env "${EVAL_ENV}" \
             --eval-num "${remaining_episodes}" \
             --max-steps "${ROLLOUT_MAX_STEPS}" \
+            "${ROLLOUT_HORIZON_ARGS[@]}" \
             --layout-offset "${layout_offset}" \
             --rollout-dir "${RAW_ROLLOUTS}" \
             --no-video
@@ -1219,6 +1233,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
           --checkpoint "${CURRENT_POLICY}" --output "${RAW_ROLLOUTS}" \
           --task "${TASK_NAME}" --episodes "${ROLLOUT_EPISODES}" \
           --max-steps "${ROLLOUT_MAX_STEPS}" \
+          "${ROLLOUT_HORIZON_ARGS[@]}" \
           --layout-seed "${ROLLOUT_LAYOUT_SEED}" \
           --policy-gpu "${REMOTE_POLICY_GPU}" --env-gpu "${REMOTE_ENV_GPU}" \
           --env-cfg "${ENV_CFG_TYPE}" --action-type "${ACTION_TYPE}" \
@@ -1634,7 +1649,7 @@ for ((iteration = 1; iteration <= ITERATIONS; iteration++)); do
       fi
       "${WCM_PYTHON_BIN}" "${SCRIPT_DIR}/value_video_metadata.py" \
         --output-dir "${ITER_DIR}/value_videos" --rollout-root "${RAW_ROLLOUTS}"
-      artifact_complete value_videos "${ITER_DIR}/value_videos" "${VALUE_VIDEO_EPISODES}" || {
+      artifact_complete value_videos "${ITER_DIR}/value_videos" "${VALUE_VIDEO_EPISODES}" "" || {
         echo "Value-video output is missing instruction metadata" >&2
         exit 1
       }

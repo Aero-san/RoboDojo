@@ -63,6 +63,11 @@ parser.add_argument(
     default=None,
     help="Override the task's maximum number of deployed actions per episode.",
 )
+parser.add_argument(
+    "--fixed_horizon",
+    action="store_true",
+    help="Continue policy execution until max_steps after task success or failure.",
+)
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -290,6 +295,9 @@ def main():
         if args_cli.max_steps < 1:
             raise ValueError("--max_steps must be a positive integer.")
         eval_cfg["max_steps"] = args_cli.max_steps
+    if args_cli.fixed_horizon and args_cli.max_steps is None:
+        raise ValueError("--fixed_horizon requires --max_steps.")
+    eval_cfg["fixed_horizon"] = bool(args_cli.fixed_horizon)
     raw_layout_shard = os.environ.get("ROBODOJO_LAYOUT_SHARD", "").strip()
     if raw_layout_shard:
         shard_index_raw, shard_count_raw = raw_layout_shard.split("/", 1)

@@ -47,6 +47,9 @@ devices:
 rollout:
   episodes: 30
   max_steps: 40
+  # Continue successful/failed simulations until max_steps so RECAP videos
+  # and trajectories have a fixed temporal horizon.
+  fixed_horizon: true
   layout_seed: 0
   minimum:
     total: 20

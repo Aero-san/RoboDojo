@@ -67,6 +67,39 @@ class RecapAdvantageArtifactTest(unittest.TestCase):
             self.assertFalse(check("advantages", path, 2))
 
 
+class RecapRolloutArtifactTest(unittest.TestCase):
+    def _write_episode(self, root: Path, *, length: int, fixed_horizon: bool) -> Path:
+        episode = root / "episodes/episode_0"
+        _write(episode / "trajectory.npz")
+        for camera in ("cam_high", "cam_left_wrist", "cam_right_wrist"):
+            _write(episode / f"{camera}.mp4")
+        manifest = {
+            "length": length,
+            "max_steps": 200,
+            "task_default_max_steps": 200,
+            "fixed_horizon": fixed_horizon,
+            "termination_reason": "environment_failure",
+        }
+        return _write(episode / "manifest.json", json.dumps(manifest))
+
+    def test_fixed_horizon_rejects_short_rollout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = self._write_episode(root, length=42, fixed_horizon=True)
+            self.assertFalse(check("rollout", root, 1))
+
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            payload["length"] = 200
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertTrue(check("rollout", root, 1))
+
+    def test_variable_horizon_allows_early_termination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_episode(root, length=51, fixed_horizon=False)
+            self.assertTrue(check("rollout", root, 1))
+
+
 class RecapBufferArtifactTest(unittest.TestCase):
     def test_task_slug_is_required_for_reusable_buffer(self):
         with tempfile.TemporaryDirectory() as directory:

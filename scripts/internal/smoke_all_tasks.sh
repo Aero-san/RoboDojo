@@ -20,6 +20,7 @@ policy_env=""
 eval_env="RoboDojo"
 eval_num="1"
 max_steps="${ROBODOJO_MAX_STEPS:-}"
+fixed_horizon="${ROBODOJO_FIXED_HORIZON:-0}"
 policy_name=""
 policy_host=""
 policy_port=""
@@ -70,6 +71,7 @@ Options:
   --run-id ID         Stable run id used in result paths and summaries.
   --eval-num NUM      Episode count for each task (default: 1). Use `native` to use per-task counts from _task.yml.
   --max-steps NUM     Override each task's maximum deployed actions per episode.
+  --fixed-horizon     Continue each simulation to max-steps after success/failure.
   --action-noise-viz  Record initial action noise and plot all tasks together after the sweep.
   --noise-viz-dir PATH  Raw/plot output root (default: eval_result/action_noise/<run-id>).
   --noise-viz-method NAME  Reduction method: umap (default) or tsne.
@@ -135,6 +137,7 @@ while [[ $# -gt 0 ]]; do
     --run-id) need_value "$@"; run_id="$2"; shift 2 ;;
     --eval-num) need_value "$@"; eval_num="$2"; shift 2 ;;
     --max-steps) need_value "$@"; max_steps="$2"; shift 2 ;;
+    --fixed-horizon) fixed_horizon="1"; shift ;;
     --action-noise-viz) action_noise_viz="true"; shift ;;
     --noise-viz-dir) need_value "$@"; action_noise_dir="$2"; action_noise_viz="true"; shift 2 ;;
     --noise-viz-method) need_value "$@"; noise_viz_method="$2"; action_noise_viz="true"; shift 2 ;;
@@ -169,6 +172,14 @@ done
 
 if [[ -n "${max_steps}" && ! "${max_steps}" =~ ^[1-9][0-9]*$ ]]; then
   echo "[smoke_all_tasks] --max-steps must be a positive integer" >&2
+  exit 2
+fi
+if [[ "${fixed_horizon}" != "0" && "${fixed_horizon}" != "1" ]]; then
+  echo "[smoke_all_tasks] ROBODOJO_FIXED_HORIZON must be 0 or 1" >&2
+  exit 2
+fi
+if [[ "${fixed_horizon}" == "1" && -z "${max_steps}" ]]; then
+  echo "[smoke_all_tasks] --fixed-horizon requires --max-steps" >&2
   exit 2
 fi
 if [[ "${noise_viz_method}" != "umap" && "${noise_viz_method}" != "tsne" ]]; then
@@ -856,6 +867,9 @@ run_eval_for_task() {
   fi
   if [[ -n "${max_steps}" ]]; then
     eval_cmd+=(--max-steps "${max_steps}")
+  fi
+  if [[ "${fixed_horizon}" == "1" ]]; then
+    eval_cmd+=(--fixed-horizon)
   fi
   if [[ "${action_noise_viz}" == "true" ]]; then
     eval_cmd+=(

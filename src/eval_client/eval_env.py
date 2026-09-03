@@ -15,6 +15,7 @@ from env.global_configs import BENCHMARK
 from env.observation_manager.obs_manager import ObsManager
 from env.seed_manager.seed_manager import SeedManager
 from src.eval_client.action_noise_recorder import ActionNoiseRecorder
+from src.eval_client.episode_termination import resolve_episode_status
 from src.eval_client.model_client import WsModelClient
 from src.eval_client.rollout_recorder import RolloutRecorder
 from utils.cluttered_generator import UnStableError
@@ -85,10 +86,14 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 if configured_max_steps < 1:
                     raise ValueError("eval_cfg.max_steps must be a positive integer.")
                 self.step_lim = configured_max_steps
+            self.fixed_horizon = bool(self.eval_cfg.get("fixed_horizon", False))
+            if self.fixed_horizon and configured_max_steps is None:
+                raise ValueError("eval_cfg.fixed_horizon requires eval_cfg.max_steps.")
             print(
                 f"[EvalEnv] max_steps={self.step_lim} "
                 f"(task_default={self.task_step_lim}, "
-                f"override={configured_max_steps is not None})",
+                f"override={configured_max_steps is not None}, "
+                f"fixed_horizon={self.fixed_horizon})",
                 flush=True,
             )
             if self.physx_monitor_enabled:
@@ -144,6 +149,7 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             self.success = [True] * self.num_envs
             self.end_flag = [False] * self.num_envs
             self.take_action_cnt = [0] * self.num_envs
+            self.failure_step = [None] * self.num_envs
             # Per-env streaming video writers: {env_idx: {camera_key: writer}}.
             # Replaces the old full-episode frame cache; only vision frames are
             # streamed to disk as they arrive instead of buffered in RAM.
@@ -164,6 +170,7 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                 "video_enabled": self.video_enabled,
                 "max_steps": self.step_lim,
                 "task_default_max_steps": self.task_step_lim,
+                "fixed_horizon": self.fixed_horizon,
                 "details": {},
             }
 
@@ -278,6 +285,7 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             self.success = [True] * self.num_envs
             self.end_flag = [False] * self.num_envs
             self.take_action_cnt = [0] * self.num_envs
+            self.failure_step = [None] * self.num_envs
             # Discard any writers left open by a previous (e.g. crashed or
             # unstable) batch before starting a fresh one.
             self._abort_video_writers()
@@ -900,19 +908,20 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
 
                 episode_seed = int(self.env_seeds[env_idx])
                 layout_id = self.seed_manager.get_layout_id(episode_seed)
+                termination_reason = (
+                    "success"
+                    if self.success[env_idx]
+                    else "environment_failure"
+                    if self.failure_step[env_idx] is not None
+                    else "max_steps"
+                )
                 self.eval_result["details"][index] = {
                     "episode_seed": episode_seed,
                     "layout_id": layout_id,
                     "success": bool(self.success[env_idx]),
                     "score": episode_score,
                     "steps": int(self.take_action_cnt[env_idx]),
-                    "termination_reason": (
-                        "success"
-                        if self.success[env_idx]
-                        else "max_steps"
-                        if self.take_action_cnt[env_idx] >= self.step_lim
-                        else "environment_failure"
-                    ),
+                    "termination_reason": termination_reason,
                 }
                 episode_outcomes.append(
                     {
@@ -922,6 +931,7 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                         "success": bool(self.success[env_idx]),
                         "score": episode_score,
                         "steps": int(self.take_action_cnt[env_idx]),
+                        "termination_reason": termination_reason,
                     }
                 )
                 if self.rollout_recorder is not None:
@@ -932,6 +942,10 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
                         score=episode_score,
                         episode_seed=episode_seed,
                         layout_id=layout_id,
+                        max_steps=self.step_lim,
+                        task_default_max_steps=self.task_step_lim,
+                        fixed_horizon=self.fixed_horizon,
+                        termination_reason=termination_reason,
                     )
                     self.eval_result["details"][index]["rollout_path"] = str(rollout_path)
                 if self.action_noise_recorder is not None:
@@ -997,13 +1011,15 @@ def create_eval_env(config, app, resume_state=None, **kwargs):
             for env_idx in range(self.num_envs):
                 if self.end_flag[env_idx]:
                     continue
-                if reward_list[env_idx] > 1 - 1e-3:
-                    self.end_flag[env_idx] = True
-                    self.success[env_idx] = True
-                    continue
-                if self.take_action_cnt[env_idx] >= self.step_lim or not self.success[env_idx]:
-                    self.end_flag[env_idx] = True
-                    self.success[env_idx] = False
+                if not self.success[env_idx] and self.failure_step[env_idx] is None:
+                    self.failure_step[env_idx] = int(self.take_action_cnt[env_idx])
+                self.success[env_idx], self.end_flag[env_idx] = resolve_episode_status(
+                    reward=reward_list[env_idx],
+                    success=self.success[env_idx],
+                    steps=self.take_action_cnt[env_idx],
+                    max_steps=self.step_lim,
+                    fixed_horizon=self.fixed_horizon,
+                )
 
             end_flag_changed_list = [
                 env_idx for env_idx in range(self.num_envs) if self.end_flag[env_idx] != pre_end_flag[env_idx]

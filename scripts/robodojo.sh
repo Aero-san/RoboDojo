@@ -117,6 +117,7 @@ run_eval() {
   local eval_num="${EVAL_NUM:-}"
   local num_envs="${ROBODOJO_NUM_ENVS:-}"
   local max_steps="${ROBODOJO_MAX_STEPS:-}"
+  local fixed_horizon="${ROBODOJO_FIXED_HORIZON:-0}"
   local layout_shard="${ROBODOJO_LAYOUT_SHARD:-}"
   local layout_offset="${ROBODOJO_LAYOUT_OFFSET:-0}"
   local dry_run="false"
@@ -144,6 +145,7 @@ run_eval() {
       --eval-num) need_value "$@"; eval_num="$2"; shift 2 ;;
       --num-envs) need_value "$@"; num_envs="$2"; shift 2 ;;
       --max-steps) need_value "$@"; max_steps="$2"; shift 2 ;;
+      --fixed-horizon) fixed_horizon="1"; shift ;;
       --layout-shard) need_value "$@"; layout_shard="$2"; shift 2 ;;
       --layout-offset) need_value "$@"; layout_offset="$2"; shift 2 ;;
       --save-video) save_video="true"; shift ;;
@@ -168,6 +170,7 @@ Common options:
   --eval-num NUM|native  Override EVAL_NUM for this eval; use `native` for per-task counts from _task.yml
   --num-envs NUM          Vectorized Isaac environments in this client process
   --max-steps NUM         Override the task's maximum deployed actions per episode
+  --fixed-horizon         Continue simulation until max-steps after success or failure
   --layout-shard I/N      Use non-overlapping layout shard I out of N (zero-based)
   --layout-offset N       Skip the first N layouts inside the selected shard
   --save-video           Save one MP4 per camera and rollout (default)
@@ -207,6 +210,14 @@ EOF
   fi
   if [[ -n "${max_steps}" && ! "${max_steps}" =~ ^[1-9][0-9]*$ ]]; then
     echo "[robodojo eval] --max-steps must be a positive integer" >&2
+    exit 2
+  fi
+  if [[ "${fixed_horizon}" != "0" && "${fixed_horizon}" != "1" ]]; then
+    echo "[robodojo eval] ROBODOJO_FIXED_HORIZON must be 0 or 1" >&2
+    exit 2
+  fi
+  if [[ "${fixed_horizon}" == "1" && -z "${max_steps}" ]]; then
+    echo "[robodojo eval] --fixed-horizon requires --max-steps" >&2
     exit 2
   fi
   if [[ -n "${layout_shard}" ]]; then
@@ -303,6 +314,7 @@ EOF
   else
     unset ROBODOJO_MAX_STEPS 2>/dev/null || true
   fi
+  export ROBODOJO_FIXED_HORIZON="${fixed_horizon}"
   if [[ -n "${layout_shard}" ]]; then
     export ROBODOJO_LAYOUT_SHARD="${layout_shard}"
   else
@@ -328,7 +340,7 @@ EOF
   fi
 
   echo "[robodojo eval] policy_dir=${policy_dir}"
-  echo "[robodojo eval] task=${task} env_cfg=${env_cfg} eval_num=${EVAL_NUM:-default} num_envs=${num_envs:-config} max_steps=${max_steps:-task-default} layout_shard=${layout_shard:-all} layout_offset=${layout_offset} save_video=${save_video} rollout_dir=${rollout_dir:-disabled} action_noise_dir=${action_noise_dir:-disabled}"
+  echo "[robodojo eval] task=${task} env_cfg=${env_cfg} eval_num=${EVAL_NUM:-default} num_envs=${num_envs:-config} max_steps=${max_steps:-task-default} fixed_horizon=${fixed_horizon} layout_shard=${layout_shard:-all} layout_offset=${layout_offset} save_video=${save_video} rollout_dir=${rollout_dir:-disabled} action_noise_dir=${action_noise_dir:-disabled}"
 
   if [[ "${dry_run}" == "true" ]]; then
     printf '[robodojo eval] dry-run: bash %q' "${ROOT_DIR}/scripts/internal/run_policy_eval.sh"
@@ -483,6 +495,7 @@ run_client() {
   local action_type="ee"
   local eval_num="${EVAL_NUM:-}"
   local max_steps="${ROBODOJO_MAX_STEPS:-}"
+  local fixed_horizon="${ROBODOJO_FIXED_HORIZON:-0}"
   local connect_timeout="5"
   local only_tasks=""
   local tasks_file=""
@@ -511,6 +524,7 @@ run_client() {
       --action-type) need_value "$@"; action_type="$2"; shift 2 ;;
       --eval-num) need_value "$@"; eval_num="$2"; shift 2 ;;
       --max-steps) need_value "$@"; max_steps="$2"; shift 2 ;;
+      --fixed-horizon) fixed_horizon="1"; shift ;;
       --connect-timeout) need_value "$@"; connect_timeout="$2"; shift 2 ;;
       --only) need_value "$@"; only_tasks="$2"; shift 2 ;;
       --tasks-file) need_value "$@"; tasks_file="$2"; shift 2 ;;
@@ -552,6 +566,7 @@ Required:
 Common options:
   --eval-num NUM|native  Override EVAL_NUM for this run; `native` uses per-task counts
   --max-steps NUM        Override the task's maximum deployed actions per episode
+  --fixed-horizon        Continue simulation until max-steps after success or failure
   --env-cfg NAME         env_cfg stem (default: arx_x5)
   --seed NUM             Eval seed / layout seed (default: 0)
   --env-gpu ID           Isaac Sim GPU (default: 0)
@@ -588,6 +603,14 @@ EOF
 
   if [[ -n "${max_steps}" && ! "${max_steps}" =~ ^[1-9][0-9]*$ ]]; then
     echo "[robodojo client] --max-steps must be a positive integer" >&2
+    exit 2
+  fi
+  if [[ "${fixed_horizon}" != "0" && "${fixed_horizon}" != "1" ]]; then
+    echo "[robodojo client] ROBODOJO_FIXED_HORIZON must be 0 or 1" >&2
+    exit 2
+  fi
+  if [[ "${fixed_horizon}" == "1" && -z "${max_steps}" ]]; then
+    echo "[robodojo client] --fixed-horizon requires --max-steps" >&2
     exit 2
   fi
   if [[ "${noise_viz_method}" != "umap" && "${noise_viz_method}" != "tsne" ]]; then
@@ -661,6 +684,9 @@ EOF
     if [[ -n "${max_steps}" ]]; then
       batch_args+=(--max-steps "${max_steps}")
     fi
+    if [[ "${fixed_horizon}" == "1" ]]; then
+      batch_args+=(--fixed-horizon)
+    fi
     if [[ "${action_noise_viz}" == "true" ]]; then
       batch_args+=(
         --action-noise-viz
@@ -697,6 +723,7 @@ EOF
   else
     unset ROBODOJO_MAX_STEPS 2>/dev/null || true
   fi
+  export ROBODOJO_FIXED_HORIZON="${fixed_horizon}"
   if [[ "${action_noise_viz}" == "true" ]]; then
     if [[ -z "${ROBODOJO_RUN_ID:-}" ]]; then
       export ROBODOJO_RUN_ID="$(date +%Y-%m-%d_%H-%M-%S)-$$"
@@ -723,8 +750,11 @@ EOF
   if [[ -n "${max_steps}" ]]; then
     client_args+=(--max_steps "${max_steps}")
   fi
+  if [[ "${fixed_horizon}" == "1" ]]; then
+    client_args+=(--fixed_horizon)
+  fi
 
-  echo "[robodojo client] task=${task} policy=${policy_name} server=${policy_host}:${policy_port} eval_num=${EVAL_NUM:-default} max_steps=${max_steps:-task-default}"
+  echo "[robodojo client] task=${task} policy=${policy_name} server=${policy_host}:${policy_port} eval_num=${EVAL_NUM:-default} max_steps=${max_steps:-task-default} fixed_horizon=${fixed_horizon}"
 
   if [[ "${dry_run}" == "true" ]]; then
     printf '[robodojo client] dry-run: bash %q' "${ROOT_DIR}/scripts/eval_policy.sh"
