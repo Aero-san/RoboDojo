@@ -33,3 +33,4 @@ wandb/
 # Generated offline migration archives (hundreds of GB; never commit)
 migration_bundle/
 logs/
+external_dependencies/
