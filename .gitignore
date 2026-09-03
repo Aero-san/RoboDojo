@@ -35,3 +35,4 @@ migration_bundle/
 logs/
 external_dependencies/
 XPolicyLab/
+third_party/
