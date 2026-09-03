@@ -148,7 +148,23 @@ def _check_rollout(path: Path, expected: int) -> bool:
         for camera in ("cam_high", "cam_left_wrist", "cam_right_wrist"):
             if not (episode_dir / f"{camera}.mp4").is_file():
                 return False
-        if int(manifest.get("length", 0)) < 1:
+        try:
+            length = int(manifest["length"])
+            max_steps = int(manifest["max_steps"])
+            task_default_max_steps = int(manifest["task_default_max_steps"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        fixed_horizon = manifest.get("fixed_horizon")
+        termination_reason = str(manifest.get("termination_reason", "")).strip()
+        if (
+            length < 1
+            or max_steps < 1
+            or task_default_max_steps < 1
+            or not isinstance(fixed_horizon, bool)
+            or not termination_reason
+        ):
+            return False
+        if fixed_horizon and length != max_steps:
             return False
     return True
 

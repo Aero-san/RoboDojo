@@ -516,6 +516,9 @@ def rollout(args: argparse.Namespace) -> None:
                 "RECAP_REMOTE_TASK": args.task,
                 "RECAP_REMOTE_EPISODES": str(args.episodes),
                 "RECAP_REMOTE_MAX_STEPS": str(args.max_steps),
+                "RECAP_REMOTE_FIXED_HORIZON": (
+                    "1" if getattr(args, "fixed_horizon", False) else "0"
+                ),
                 "RECAP_REMOTE_LAYOUT_SEED": str(args.layout_seed),
                 "RECAP_REMOTE_LAYOUT_OFFSET": str(args.layout_offset),
                 "RECAP_REMOTE_POLICY_GPU": str(args.policy_gpu),
@@ -664,6 +667,7 @@ def main() -> None:
     rollout_parser.add_argument("--task", required=True)
     rollout_parser.add_argument("--episodes", type=int, required=True)
     rollout_parser.add_argument("--max-steps", type=int, required=True)
+    rollout_parser.add_argument("--fixed-horizon", action="store_true")
     rollout_parser.add_argument("--layout-seed", type=int, required=True)
     rollout_parser.add_argument("--layout-offset", type=int, default=0)
     rollout_parser.add_argument("--policy-gpu", type=int, required=True)

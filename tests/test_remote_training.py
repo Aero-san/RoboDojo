@@ -613,6 +613,7 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                 task="general_pickup",
                 episodes=3,
                 max_steps=40,
+                fixed_horizon=True,
                 layout_seed=0,
                 layout_offset=0,
                 policy_gpu=0,
@@ -652,6 +653,7 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
                 processor,
             )
             self.assertEqual(environment["RECAP_REMOTE_MAX_STEPS"], "40")
+            self.assertEqual(environment["RECAP_REMOTE_FIXED_HORIZON"], "1")
 
     def test_rollout_max_steps_reaches_local_and_remote_eval_launchers(self):
         run_recap = Path("scripts/posttrain/run_recap.sh").read_text(encoding="utf-8")
@@ -663,6 +665,10 @@ class RemoteTrainingHelpersTest(unittest.TestCase):
             run_recap.count('--max-steps "${ROLLOUT_MAX_STEPS}"'), 3
         )
         self.assertIn('--max-steps "${RECAP_REMOTE_MAX_STEPS}"', worker)
+        self.assertGreaterEqual(
+            run_recap.count('"${ROLLOUT_HORIZON_ARGS[@]}"'), 4
+        )
+        self.assertIn('--fixed-horizon', worker)
 
     def test_value_video_rebuilds_missing_remote_rollout_cache(self):
         with tempfile.TemporaryDirectory() as directory:

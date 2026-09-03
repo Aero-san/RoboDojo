@@ -208,6 +208,10 @@ class RolloutRecorder:
         score: float,
         episode_seed: int,
         layout_id: int,
+        max_steps: int,
+        task_default_max_steps: int,
+        fixed_horizon: bool,
+        termination_reason: str,
     ) -> Path:
         states = self._states.pop(env_idx, [])
         actions = self._actions.pop(env_idx, [])
@@ -248,6 +252,10 @@ class RolloutRecorder:
             "success": bool(success),
             "score": float(score),
             "length": len(actions),
+            "max_steps": int(max_steps),
+            "task_default_max_steps": int(task_default_max_steps),
+            "fixed_horizon": bool(fixed_horizon),
+            "termination_reason": str(termination_reason),
             "fps": self.fps,
             "action_type": action_type,
             "state_dim": int(states[0].size),

@@ -46,6 +46,7 @@ devices:
 rollout:
   episodes: 40
   max_steps: 200
+  fixed_horizon: true
   layout_seed: 0
   minimum:
     total: 40

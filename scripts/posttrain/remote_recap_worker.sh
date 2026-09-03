@@ -457,6 +457,10 @@ case "${RECAP_REMOTE_ACTION}" in
     }
     remaining=$((RECAP_REMOTE_EPISODES - recorded))
     if (( remaining > 0 )); then
+      fixed_horizon_args=()
+      if [[ "${RECAP_REMOTE_FIXED_HORIZON:-0}" == "1" ]]; then
+        fixed_horizon_args+=(--fixed-horizon)
+      fi
       layout_offset=$(( ${RECAP_REMOTE_LAYOUT_OFFSET:-0} + recorded ))
       log="${rollout_dir}/rollout_$(date +%Y%m%dT%H%M%S).log"
       stop_remote_reservation
@@ -475,6 +479,7 @@ case "${RECAP_REMOTE_ACTION}" in
           --eval-env "${RECAP_REMOTE_EVAL_ENV}" \
           --eval-num "${remaining}" \
           --max-steps "${RECAP_REMOTE_MAX_STEPS}" \
+          "${fixed_horizon_args[@]}" \
           --rollout-dir "${rollout_dir}" \
           --no-video >"${log}" 2>&1 || {
             tail -n 100 "${log}" >&2 || true

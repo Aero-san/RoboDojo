@@ -29,6 +29,13 @@ class RecapConfigTest(unittest.TestCase):
         self.assertEqual(environment["TRAIN_GPUS"], "0,1,2,3")
         self.assertEqual(resolved["rollout"]["max_steps"], 40)
         self.assertEqual(environment["RECAP_ROLLOUT_MAX_STEPS"], "40")
+        self.assertFalse(resolved["rollout"]["fixed_horizon"])
+        self.assertEqual(environment["RECAP_ROLLOUT_FIXED_HORIZON"], "0")
+
+    def test_fixed_horizon_resolves_for_hdf5_remote_config(self):
+        resolved, environment = resolve(G05_HDF5_EXAMPLE)
+        self.assertTrue(resolved["rollout"]["fixed_horizon"])
+        self.assertEqual(environment["RECAP_ROLLOUT_FIXED_HORIZON"], "1")
 
     def test_rollout_max_steps_must_be_positive(self):
         payload = yaml.safe_load(EXAMPLE.read_text(encoding="utf-8"))
